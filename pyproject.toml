@@ -15,3 +15,8 @@ dependencies = [
     "transformers>=4.46.3",
     "wandb>=0.18.7",
 ]
+
+[tool.uv]
+dev-dependencies = [
+    "ipykernel>=6.29.5",
+]
