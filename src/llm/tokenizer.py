@@ -6,7 +6,20 @@ from tokenizers import (
     decoders,
     trainers,
 )
-from llm.wmt_dataset import get_dataset
+from datasets import load_dataset
+
+
+def get_dataset(name):
+    # Load the dataset
+    train_dataset = load_dataset("wmt/wmt14", name=name, split="train")
+    val_dataset = load_dataset("wmt/wmt14", name=name, split="validation")
+    test_dataset = load_dataset("wmt/wmt14", name=name, split="test")
+
+    return {
+        "train": train_dataset,
+        "val": val_dataset,
+        "test": test_dataset,
+    }
 
 
 def get_tokenizers(dataset_name, path="data"):
@@ -71,8 +84,9 @@ def create_separate_wmt_tokenizers(
         tokenizer.normalizer = normalizer_list
 
         # Set pre-tokenizer and decoder to ByteLevel
-        tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
-        tokenizer.decoder = decoders.BPEDecoder()
+        # ByteLevel preserves the whitespace spacing between words.
+        tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel()
+        tokenizer.decoder = decoders.ByteLevel()
 
         # Define BPE trainer
         trainer = trainers.BpeTrainer(
