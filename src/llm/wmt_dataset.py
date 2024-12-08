@@ -18,7 +18,11 @@ def get_dataset(name):
     val_dataset = load_dataset("wmt/wmt14", name=name, split="validation")
     test_dataset = load_dataset("wmt/wmt14", name=name, split="test")
 
-    return train_dataset, val_dataset, test_dataset
+    return {
+        "train": train_dataset,
+        "val": val_dataset,
+        "test": test_dataset,
+    }
 
 
 def get_dataloader(dataset, batch_size, source_lang, target_lang):
