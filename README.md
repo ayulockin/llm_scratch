@@ -6,3 +6,7 @@ Exploring LLMs by implementing and understanding all the key components, perform
 ## Installation
 
 `uv pip install -e .`
+
+## Training Tokenizers
+
+`python src/llm/train_tokenizer.py`

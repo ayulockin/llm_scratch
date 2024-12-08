@@ -163,4 +163,7 @@ cython_debug/
 
 # Ruff
 .ruff_cache
+
 notebooks/
+data/
+wandb/
