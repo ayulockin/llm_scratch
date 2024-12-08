@@ -1,3 +1,5 @@
+from typing import Union
+
 from tokenizers import (
     Tokenizer,
     models,
@@ -35,6 +37,13 @@ def get_tokenizers(dataset_name, path="data"):
         raise FileNotFoundError(
             f"Tokenizers for {dataset_name} not found. Please train the tokenizers first using python src/llm/train_tokenizer.py."
         )
+
+
+def decode_tokens(tokenizer, tokens: Union[list[int], list[list[int]]], batch=False):
+    if batch:
+        return tokenizer.decode_batch(tokens)
+    else:
+        return tokenizer.decode(tokens)
 
 
 def create_separate_wmt_tokenizers(
