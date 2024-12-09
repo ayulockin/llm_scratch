@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from dataclasses import dataclass
-from torchtyping import TensorType
+from jaxtyping import Array, Float32
 
 
 @dataclass
@@ -24,8 +24,8 @@ class FeedForward(nn.Module):
 
     def forward(
         self,
-        inputs: TensorType["batch", "seq_len", "model_dim"],
-    ) -> TensorType["batch", "seq_len", "model_dim"]:
+        inputs: Float32[Array, "batch seq_len model_dim"],
+    ) -> Float32[Array, "batch seq_len model_dim"]:
         x = self.layer1(inputs)
         x = self.layer2(x)
         return x
@@ -46,11 +46,11 @@ class ScaledDotProductAttention(nn.Module):
 
     def forward(
         self,
-        query: TensorType["batch", "seq_len", "model_dim"],
-        key: TensorType["batch", "seq_len", "model_dim"],
-        value: TensorType["batch", "seq_len", "model_dim"],
+        query: Float32[Array, "batch seq_len model_dim"],
+        key: Float32[Array, "batch seq_len model_dim"],
+        value: Float32[Array, "batch seq_len model_dim"],
         is_causal: bool = False,
-    ) -> TensorType["batch", "seq_len", "dim_v"]:
+    ) -> Float32[Array, "batch seq_len dim_v"]:
         # project key and query
         key = self.W_key(key)
         query = self.W_query(query)
@@ -91,10 +91,10 @@ class MultiHeadAttention(nn.Module):
 
     def forward(
         self,
-        query: TensorType["batch", "seq_len", "model_dim"],
-        key: TensorType["batch", "seq_len", "model_dim"],
-        value: TensorType["batch", "seq_len", "model_dim"],
-    ) -> TensorType["batch", "seq_len", "model_dim"]:
+        query: Float32[Array, "batch seq_len model_dim"],
+        key: Float32[Array, "batch seq_len model_dim"],
+        value: Float32[Array, "batch seq_len model_dim"],
+    ) -> Float32[Array, "batch seq_len model_dim"]:
         outputs = list()
         for head in self.projection_heads:
             outputs.append(head(query, key, value))
@@ -122,8 +122,8 @@ class EncoderLayer(nn.Module):
         self.layer_norm2 = nn.LayerNorm(normalized_shape=model_dim)
 
     def forward(
-        self, inputs: TensorType["batch", "enc_seq_len", "model_dim"]
-    ) -> TensorType["batch", "enc_seq_len", "model_dim"]:
+        self, inputs: Float32[Array, "batch enc_seq_len model_dim"]
+    ) -> Float32[Array, "batch enc_seq_len model_dim"]:
         residual = inputs
 
         x = self.multi_head_attention(query=inputs, key=inputs, value=inputs)
@@ -157,8 +157,8 @@ class Encoder(nn.Module):
 
     def forward(
         self,
-        encoder_inputs: TensorType["batch", "enc_seq_len", "model_dim"],
-    ) -> TensorType["batch", "enc_seq_len", "model_dim"]:
+        encoder_inputs: Float32[Array, "batch enc_seq_len model_dim"],
+    ) -> Float32[Array, "batch enc_seq_len model_dim"]:
         encoder_outputs = list()
         for encoder_layer in self.encoder_layers:
             encoder_inputs = encoder_layer(encoder_inputs)
@@ -188,9 +188,9 @@ class DecoderLayer(nn.Module):
 
     def forward(
         self,
-        decoder_inputs: TensorType["batch", "dec_seq_len", "model_dim"],
-        encoder_outputs: TensorType["batch", "enc_seq_len", "model_dim"],
-    ) -> TensorType["batch", "dec_seq_len", "model_dim"]:
+        decoder_inputs: Float32[Array, "batch dec_seq_len model_dim"],
+        encoder_outputs: Float32[Array, "batch enc_seq_len model_dim"],
+    ) -> Float32[Array, "batch dec_seq_len model_dim"]:
         residual = decoder_inputs
 
         x = self.masked_multi_head_attention(
@@ -236,9 +236,9 @@ class Decoder(nn.Module):
 
     def forward(
         self,
-        decoder_inputs: TensorType["batch", "dec_seq_len", "model_dim"],
-        encoder_outputs: TensorType["batch", "enc_seq_len", "model_dim"],
-    ) -> TensorType["batch", "dec_seq_len", "model_dim"]:
+        decoder_inputs: Float32[Array, "batch dec_seq_len model_dim"],
+        encoder_outputs: Float32[Array, "batch enc_seq_len model_dim"],
+    ) -> Float32[Array, "batch dec_seq_len model_dim"]:
         x = decoder_inputs
         for idx, decoder_layer in enumerate(self.decoder_layers):
             x = decoder_layer(decoder_inputs=x, encoder_outputs=encoder_outputs[idx])
@@ -266,9 +266,9 @@ class Transformer(nn.Module):
 
     def forward(
         self,
-        encoder_inputs: TensorType["batch", "enc_seq_len", "model_dim"],
-        decoder_inputs: TensorType["batch", "dec_seq_len", "model_dim"],
-    ) -> TensorType["batch", "dec_seq_len", "model_dim"]:
+        encoder_inputs: Float32[Array, "batch enc_seq_len model_dim"],
+        decoder_inputs: Float32[Array, "batch dec_seq_len model_dim"],
+    ) -> Float32[Array, "batch dec_seq_len model_dim"]:
         # We assume the encoder inputs and the decoder inputs
         # are tokens after adding positional information into them
         encoder_outputs = self.encoder(
