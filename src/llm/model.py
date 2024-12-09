@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from dataclasses import dataclass
+from torchtyping import TensorType
 
 
 @dataclass
@@ -14,14 +15,17 @@ class TransformerConfig:
 class FeedForward(nn.Module):
     def __init__(
         self,
-        model_dim,
-        expansion_dim,
+        model_dim: int,
+        expansion_dim: int,
     ):
         super().__init__()
         self.layer1 = nn.Linear(model_dim, expansion_dim, bias=True)
         self.layer2 = nn.Linear(expansion_dim, model_dim, bias=True)
 
-    def forward(self, inputs):
+    def forward(
+        self,
+        inputs: TensorType["batch", "seq_len", "model_dim"],
+    ) -> TensorType["batch", "seq_len", "model_dim"]:
         x = self.layer1(inputs)
         x = self.layer2(x)
         return x
@@ -30,9 +34,9 @@ class FeedForward(nn.Module):
 class ScaledDotProductAttention(nn.Module):
     def __init__(
         self,
-        model_dim,
-        dim_k,
-        dim_v,
+        model_dim: int,
+        dim_k: int,
+        dim_v: int,
     ):
         super().__init__()
         self.W_query = nn.Linear(model_dim, dim_k, bias=False)
@@ -40,7 +44,13 @@ class ScaledDotProductAttention(nn.Module):
         self.W_value = nn.Linear(model_dim, dim_v, bias=False)
         self.dim_k = dim_k
 
-    def forward(self, query, key, value, is_causal=False):
+    def forward(
+        self,
+        query: TensorType["batch", "seq_len", "model_dim"],
+        key: TensorType["batch", "seq_len", "model_dim"],
+        value: TensorType["batch", "seq_len", "model_dim"],
+        is_causal: bool = False,
+    ) -> TensorType["batch", "seq_len", "dim_v"]:
         # project key and query
         key = self.W_key(key)
         query = self.W_query(query)
@@ -67,8 +77,8 @@ class ScaledDotProductAttention(nn.Module):
 class MultiHeadAttention(nn.Module):
     def __init__(
         self,
-        model_dim,
-        num_heads,
+        model_dim: int,
+        num_heads: int,
     ):
         super().__init__()
         dim_k = dim_v = model_dim // num_heads
@@ -79,7 +89,12 @@ class MultiHeadAttention(nn.Module):
             )
         self.W_out = nn.Linear(model_dim, model_dim)
 
-    def forward(self, query, key, value):
+    def forward(
+        self,
+        query: TensorType["batch", "seq_len", "model_dim"],
+        key: TensorType["batch", "seq_len", "model_dim"],
+        value: TensorType["batch", "seq_len", "model_dim"],
+    ) -> TensorType["batch", "seq_len", "model_dim"]:
         outputs = list()
         for head in self.projection_heads:
             outputs.append(head(query, key, value))
@@ -92,9 +107,9 @@ class MultiHeadAttention(nn.Module):
 class EncoderLayer(nn.Module):
     def __init__(
         self,
-        model_dim,
-        num_heads,
-        expansion_dim,
+        model_dim: int,
+        num_heads: int,
+        expansion_dim: int,
     ):
         super().__init__()
         self.multi_head_attention = MultiHeadAttention(
@@ -106,7 +121,9 @@ class EncoderLayer(nn.Module):
         self.layer_norm1 = nn.LayerNorm(normalized_shape=model_dim)
         self.layer_norm2 = nn.LayerNorm(normalized_shape=model_dim)
 
-    def forward(self, inputs):
+    def forward(
+        self, inputs: TensorType["batch", "enc_seq_len", "model_dim"]
+    ) -> TensorType["batch", "enc_seq_len", "model_dim"]:
         residual = inputs
 
         x = self.multi_head_attention(query=inputs, key=inputs, value=inputs)
@@ -122,10 +139,10 @@ class EncoderLayer(nn.Module):
 class Encoder(nn.Module):
     def __init__(
         self,
-        model_dim,
-        num_layers,
-        num_heads,
-        expansion_dim,
+        model_dim: int,
+        num_layers: int,
+        num_heads: int,
+        expansion_dim: int,
     ):
         super().__init__()
         self.encoder_layers = list()
@@ -138,7 +155,10 @@ class Encoder(nn.Module):
                 )
             )
 
-    def forward(self, encoder_inputs):
+    def forward(
+        self,
+        encoder_inputs: TensorType["batch", "enc_seq_len", "model_dim"],
+    ) -> TensorType["batch", "enc_seq_len", "model_dim"]:
         encoder_outputs = list()
         for encoder_layer in self.encoder_layers:
             encoder_inputs = encoder_layer(encoder_inputs)
@@ -149,9 +169,9 @@ class Encoder(nn.Module):
 class DecoderLayer(nn.Module):
     def __init__(
         self,
-        model_dim,
-        num_heads,
-        expansion_dim,
+        model_dim: int,
+        num_heads: int,
+        expansion_dim: int,
     ):
         super().__init__()
         self.masked_multi_head_attention = MultiHeadAttention(
@@ -166,7 +186,11 @@ class DecoderLayer(nn.Module):
         self.layer_norm1 = nn.LayerNorm(normalized_shape=model_dim)
         self.layer_norm2 = nn.LayerNorm(normalized_shape=model_dim)
 
-    def forward(self, decoder_inputs, encoder_outputs):
+    def forward(
+        self,
+        decoder_inputs: TensorType["batch", "dec_seq_len", "model_dim"],
+        encoder_outputs: TensorType["batch", "enc_seq_len", "model_dim"],
+    ) -> TensorType["batch", "dec_seq_len", "model_dim"]:
         residual = decoder_inputs
 
         x = self.masked_multi_head_attention(
@@ -194,10 +218,10 @@ class DecoderLayer(nn.Module):
 class Decoder(nn.Module):
     def __init__(
         self,
-        model_dim,
-        num_layers,
-        num_heads,
-        expansion_dim,
+        model_dim: int,
+        num_layers: int,
+        num_heads: int,
+        expansion_dim: int,
     ):
         super().__init__()
         self.decoder_layers = list()
@@ -210,7 +234,11 @@ class Decoder(nn.Module):
                 )
             )
 
-    def forward(self, decoder_inputs, encoder_outputs):
+    def forward(
+        self,
+        decoder_inputs: TensorType["batch", "dec_seq_len", "model_dim"],
+        encoder_outputs: TensorType["batch", "enc_seq_len", "model_dim"],
+    ) -> TensorType["batch", "dec_seq_len", "model_dim"]:
         x = decoder_inputs
         for idx, decoder_layer in enumerate(self.decoder_layers):
             x = decoder_layer(decoder_inputs=x, encoder_outputs=encoder_outputs[idx])
@@ -220,7 +248,7 @@ class Decoder(nn.Module):
 class Transformer(nn.Module):
     def __init__(
         self,
-        config,
+        config: TransformerConfig,
     ):
         super().__init__()
         self.encoder = Encoder(
@@ -236,7 +264,11 @@ class Transformer(nn.Module):
             expansion_dim=config.expansion_dim,
         )
 
-    def forward(self, encoder_inputs, decoder_inputs):
+    def forward(
+        self,
+        encoder_inputs: TensorType["batch", "enc_seq_len", "model_dim"],
+        decoder_inputs: TensorType["batch", "dec_seq_len", "model_dim"],
+    ) -> TensorType["batch", "dec_seq_len", "model_dim"]:
         # We assume the encoder inputs and the decoder inputs
         # are tokens after adding positional information into them
         encoder_outputs = self.encoder(
