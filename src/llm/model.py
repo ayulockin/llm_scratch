@@ -1,8 +1,10 @@
 from typing import List
 import torch
+import math
+from torch import Tensor
 from torch import nn
 from dataclasses import dataclass
-from jaxtyping import Array, Float32
+from jaxtyping import Float32
 
 
 @dataclass
@@ -25,8 +27,8 @@ class FeedForward(nn.Module):
 
     def forward(
         self,
-        inputs: Float32[Array, "batch seq_len model_dim"],
-    ) -> Float32[Array, "batch seq_len model_dim"]:
+        inputs: Float32[Tensor, "batch seq_len model_dim"],
+    ) -> Float32[Tensor, "batch seq_len model_dim"]:
         x = self.layer1(inputs)
         x = self.layer2(x)
         return x
@@ -47,21 +49,21 @@ class ScaledDotProductAttention(nn.Module):
 
     def forward(
         self,
-        query: Float32[Array, "batch seq_len model_dim"],
-        key: Float32[Array, "batch seq_len model_dim"],
-        value: Float32[Array, "batch seq_len model_dim"],
+        query: Float32[Tensor, "batch seq_len model_dim"],
+        key: Float32[Tensor, "batch seq_len model_dim"],
+        value: Float32[Tensor, "batch seq_len model_dim"],
         is_causal: bool = False,
-    ) -> Float32[Array, "batch seq_len dim_v"]:
+    ) -> Float32[Tensor, "batch seq_len dim_v"]:
         # project key and query
         key = self.W_key(key)
         query = self.W_query(query)
 
-        similarity = torch.matmul(query, key.T)
-        scaled_similarity = torch.divide(similarity, torch.sqrt(self.dim_k))
+        similarity = torch.matmul(query, torch.permute(key, dims=(0, 2, 1)))
+        scaled_similarity = torch.divide(similarity, math.sqrt(self.dim_k))
 
         if is_causal:
             scaled_similarity = scaled_similarity.masked_fill(
-                mask=torch.triu(torch.ones_like(scaled_similarity), diagonal=1),
+                mask=torch.triu(torch.ones_like(scaled_similarity).bool(), diagonal=1),
                 value=-torch.inf,
             )
         attention_scores = torch.softmax(
@@ -92,13 +94,14 @@ class MultiHeadAttention(nn.Module):
 
     def forward(
         self,
-        query: Float32[Array, "batch seq_len model_dim"],
-        key: Float32[Array, "batch seq_len model_dim"],
-        value: Float32[Array, "batch seq_len model_dim"],
-    ) -> Float32[Array, "batch seq_len model_dim"]:
+        query: Float32[Tensor, "batch seq_len model_dim"],
+        key: Float32[Tensor, "batch seq_len model_dim"],
+        value: Float32[Tensor, "batch seq_len model_dim"],
+        is_causal: bool=False,
+    ) -> Float32[Tensor, "batch seq_len model_dim"]:
         outputs = list()
         for head in self.projection_heads:
-            outputs.append(head(query, key, value))
+            outputs.append(head(query, key, value, is_causal=is_causal))
 
         outputs = torch.concat(outputs, dim=-1)
         outputs = self.W_out(outputs)
@@ -123,8 +126,8 @@ class EncoderLayer(nn.Module):
         self.layer_norm2 = nn.LayerNorm(normalized_shape=model_dim)
 
     def forward(
-        self, inputs: Float32[Array, "batch enc_seq_len model_dim"]
-    ) -> Float32[Array, "batch enc_seq_len model_dim"]:
+        self, inputs: Float32[Tensor, "batch enc_seq_len model_dim"]
+    ) -> Float32[Tensor, "batch enc_seq_len model_dim"]:
         residual = inputs
 
         x = self.multi_head_attention(query=inputs, key=inputs, value=inputs)
@@ -158,8 +161,8 @@ class Encoder(nn.Module):
 
     def forward(
         self,
-        encoder_inputs: Float32[Array, "batch enc_seq_len model_dim"],
-    ) -> Float32[Array, "batch enc_seq_len model_dim"]:
+        encoder_inputs: Float32[Tensor, "batch enc_seq_len model_dim"],
+    ) -> Float32[Tensor, "batch enc_seq_len model_dim"]:
         encoder_outputs = list()
         for encoder_layer in self.encoder_layers:
             encoder_inputs = encoder_layer(encoder_inputs)
@@ -190,9 +193,9 @@ class DecoderLayer(nn.Module):
 
     def forward(
         self,
-        decoder_inputs: Float32[Array, "batch dec_seq_len model_dim"],
-        encoder_outputs: Float32[Array, "batch enc_seq_len model_dim"],
-    ) -> Float32[Array, "batch dec_seq_len model_dim"]:
+        decoder_inputs: Float32[Tensor, "batch dec_seq_len model_dim"],
+        encoder_outputs: Float32[Tensor, "batch enc_seq_len model_dim"],
+    ) -> Float32[Tensor, "batch dec_seq_len model_dim"]:
         residual = decoder_inputs
 
         x = self.masked_multi_head_attention(
@@ -229,7 +232,7 @@ class Decoder(nn.Module):
         self.decoder_layers = list()
         for _ in range(num_layers):
             self.decoder_layers.append(
-                EncoderLayer(
+                DecoderLayer(
                     model_dim=model_dim,
                     num_heads=num_heads,
                     expansion_dim=expansion_dim,
@@ -238,9 +241,9 @@ class Decoder(nn.Module):
 
     def forward(
         self,
-        decoder_inputs: Float32[Array, "batch dec_seq_len model_dim"],
-        encoder_outputs: List[Float32[Array, "batch enc_seq_len model_dim"]],
-    ) -> Float32[Array, "batch dec_seq_len model_dim"]:
+        decoder_inputs: Float32[Tensor, "batch dec_seq_len model_dim"],
+        encoder_outputs: List[Float32[Tensor, "batch enc_seq_len model_dim"]],
+    ) -> Float32[Tensor, "batch dec_seq_len model_dim"]:
         x = decoder_inputs
         for idx, decoder_layer in enumerate(self.decoder_layers):
             x = decoder_layer(decoder_inputs=x, encoder_outputs=encoder_outputs[idx])
@@ -268,9 +271,9 @@ class Transformer(nn.Module):
 
     def forward(
         self,
-        encoder_inputs: Float32[Array, "batch enc_seq_len model_dim"],
-        decoder_inputs: Float32[Array, "batch dec_seq_len model_dim"],
-    ) -> Float32[Array, "batch dec_seq_len model_dim"]:
+        encoder_inputs: Float32[Tensor, "batch enc_seq_len model_dim"],
+        decoder_inputs: Float32[Tensor, "batch dec_seq_len model_dim"],
+    ) -> Float32[Tensor, "batch dec_seq_len model_dim"]:
         encoder_outputs = self.encoder(
             encoder_inputs=encoder_inputs,
         )  # this is a list of encoder outputs from each layer
