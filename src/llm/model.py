@@ -1,3 +1,4 @@
+from typing import List
 import torch
 from torch import nn
 from dataclasses import dataclass
@@ -185,6 +186,7 @@ class DecoderLayer(nn.Module):
         )
         self.layer_norm1 = nn.LayerNorm(normalized_shape=model_dim)
         self.layer_norm2 = nn.LayerNorm(normalized_shape=model_dim)
+        self.layer_norm3 = nn.LayerNorm(normalized_shape=model_dim)
 
     def forward(
         self,
@@ -206,12 +208,12 @@ class DecoderLayer(nn.Module):
         x = self.multi_head_attention(
             query=x, key=encoder_outputs, value=encoder_outputs
         )
-        x = self.layer_norm1(x) + residual
+        x = self.layer_norm2(x) + residual
 
         residual = x
 
         x = self.feed_forward(x)
-        x = self.layer_norm2(x) + residual
+        x = self.layer_norm3(x) + residual
         return x
 
 
@@ -237,7 +239,7 @@ class Decoder(nn.Module):
     def forward(
         self,
         decoder_inputs: Float32[Array, "batch dec_seq_len model_dim"],
-        encoder_outputs: Float32[Array, "batch enc_seq_len model_dim"],
+        encoder_outputs: List[Float32[Array, "batch enc_seq_len model_dim"]],
     ) -> Float32[Array, "batch dec_seq_len model_dim"]:
         x = decoder_inputs
         for idx, decoder_layer in enumerate(self.decoder_layers):
@@ -269,8 +271,6 @@ class Transformer(nn.Module):
         encoder_inputs: Float32[Array, "batch enc_seq_len model_dim"],
         decoder_inputs: Float32[Array, "batch dec_seq_len model_dim"],
     ) -> Float32[Array, "batch dec_seq_len model_dim"]:
-        # We assume the encoder inputs and the decoder inputs
-        # are tokens after adding positional information into them
         encoder_outputs = self.encoder(
             encoder_inputs=encoder_inputs,
         )  # this is a list of encoder outputs from each layer
