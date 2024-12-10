@@ -243,5 +243,25 @@ def create_separate_wmt_tokenizers(
 
 
 if __name__ == "__main__":
-    create_separate_wmt_tokenizers()
+    import argparse
 
+    parser = argparse.ArgumentParser(description='Train tokenizers for WMT dataset')
+    parser.add_argument('--dataset', type=str, default='de-en',
+                        help='Dataset name (e.g., de-en, fr-en, cs-en). Default is `de-en`')
+    parser.add_argument('--vocab-size', type=int, default=30000,
+                        help='Total vocabulary size for both languages. Default is 30000')
+    parser.add_argument('--min-frequency', type=int, default=2,
+                        help='Minimum frequency for a token to be included while merging the vocabularies. Default is 2')
+    parser.add_argument('--batch-size', type=int, default=1000,
+                        help='Batch size for training. Default is 1000')
+    parser.add_argument('--special-tokens', type=str, nargs='+', default=["<s>", "<pad>", "</s>", "<unk>", "<sep>"],
+                        help='Special tokens to be included in the vocabulary. Default is ["<s>", "<pad>", "</s>", "<unk>", "<sep>"]')
+    args = parser.parse_args()
+
+    create_separate_wmt_tokenizers(
+        vocab_size=args.vocab_size,
+        min_frequency=args.min_frequency,
+        special_tokens=args.special_tokens,
+        batch_size=args.batch_size,
+        dataset_name=args.dataset,
+    )

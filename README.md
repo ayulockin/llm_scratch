@@ -9,4 +9,10 @@ Exploring LLMs by implementing and understanding all the key components, perform
 
 ## Training Tokenizers
 
-`python src/llm/train_tokenizer.py`
+Run the following command to train the tokenizers:
+
+`python src/llm/wmt_data_utils.py`
+
+To configure the tokenizers, you can pass the following arguments check out the available arguments in the script.
+
+`python src/llm/wmt_data_utils.py --help`
