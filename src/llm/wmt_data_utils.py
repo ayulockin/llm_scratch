@@ -56,7 +56,7 @@ def get_wmt_dataset(name: str):
     }
 
 
-def get_tokenizers(dataset_name, path="data"):
+def get_wmt_tokenizers(dataset_name, path="data"):
     """
     Get the tokenizers for the specified dataset name. We have two tokenizers for each language pair. Thus if you want to get the tokenizers for `en-de`, you will get two tokenizers, one for English and one for German.
 
@@ -78,7 +78,7 @@ def get_tokenizers(dataset_name, path="data"):
         )
     
 
-def decode_tokens(tokenizer, tokens: Union[list[int], list[list[int]]], batch=False):
+def decode_wmt_tokens(tokenizer, tokens: Union[list[int], list[list[int]]], batch=False):
     """
     Decode the tokens into a string. The tokenizer passed here should be loaded using `get_tokenizers`.
 
@@ -97,7 +97,7 @@ def decode_tokens(tokenizer, tokens: Union[list[int], list[list[int]]], batch=Fa
         return tokenizer.decode(tokens)
 
 
-def collate_fn(batch, source, target, tokenizers):
+def _collate_fn(batch, source, target, tokenizers):
     """
     Collate function for the dataloader. This will collate the batches into a single tensor.
 
@@ -135,7 +135,7 @@ def collate_fn(batch, source, target, tokenizers):
     return tokenized_source_batch, tokenized_target_batch
 
 
-def get_dataloader(
+def get_wmt_dataloader(
     dataset,
     batch_size,
     source_lang,
@@ -155,12 +155,12 @@ def get_dataloader(
     Returns:
         DataLoader: The dataloader for the specified dataset name.
     """
-    tokenizers = get_tokenizers(f"{source_lang}-{target_lang}", tokenizer_path)
+    tokenizers = get_wmt_tokenizers(f"{source_lang}-{target_lang}", tokenizer_path)
     return DataLoader(
         dataset=dataset,
         batch_size=batch_size,
         collate_fn=partial(
-            collate_fn, source=source_lang, target=target_lang, tokenizers=tokenizers
+            _collate_fn, source=source_lang, target=target_lang, tokenizers=tokenizers
         ),
     )
 
@@ -191,7 +191,7 @@ def create_separate_wmt_tokenizers(
 
     # Load training dataset
     print(f"Loading dataset WMT14:{dataset_name}...")
-    ds = get_dataset(dataset_name)["train"]
+    ds = get_wmt_dataset(dataset_name)["train"]
 
     # Verify that the specified languages exist in the dataset
     langs = dataset_name.split("-")
