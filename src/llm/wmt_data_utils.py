@@ -23,7 +23,7 @@ def get_wmt_dataset(name: str):
     Dataset: https://huggingface.co/datasets/wmt/wmt14
 
     Args:
-        name (str): The name of the dataset.
+        name (str): The name of the dataset. The valid names are `cs-en`, `de-en`, `fr-en`, `hi-en`, `ru-en`.
 
     Returns:
         dict: The `train`, `val` and `test` datasets for the specified name.
