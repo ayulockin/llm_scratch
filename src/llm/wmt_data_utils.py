@@ -16,7 +16,7 @@ from tokenizers import (
 from datasets import load_dataset
 
 
-def get_dataset(name):
+def get_wmt_dataset(name: str):
     """Get the dataset for the specified name. This will load the WMT14 dataset.
 
     Dataset: https://huggingface.co/datasets/wmt/wmt14
