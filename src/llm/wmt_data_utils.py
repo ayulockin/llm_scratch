@@ -74,7 +74,7 @@ def get_tokenizers(dataset_name, path="data"):
         return tokenizers
     except FileNotFoundError:
         raise FileNotFoundError(
-            f"Tokenizers for {dataset_name} not found. Please train the tokenizers first using python src/llm/train_tokenizer.py."
+            f"Tokenizers for {dataset_name} not found. Please train the tokenizers first using `python src/llm/wmt_data_utils.py`."
         )
     
 
