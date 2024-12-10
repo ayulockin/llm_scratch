@@ -173,7 +173,7 @@ def create_separate_wmt_tokenizers(
     dataset_name="de-en",
 ):
     """
-    Create and train two separate tokenizers for English and German from the WMT dataset.
+    Create and train two separate tokenizers for Source and Target languages from the WMT dataset.
 
     Args:
         vocab_size (int): Total vocabulary size for the tokenizers. If vocab size is 30000, english and german tokenizers will have 15000 tokens each.
