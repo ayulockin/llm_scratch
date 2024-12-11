@@ -37,13 +37,14 @@ def get_wmt_dataset(name: str):
     ]
     # Handle reversed language pairs (e.g., en-cs -> cs-en)
     reversed_pairs = {
-        f"{b}-{a}": f"{a}-{b}" 
-        for a, b in [pair.split("-") for pair in valid_names]
+        f"{b}-{a}": f"{a}-{b}" for a, b in [pair.split("-") for pair in valid_names]
     }
     if name in reversed_pairs:
         name = reversed_pairs[name]
 
-    assert name in valid_names, f"Invalid dataset name: {name}. Please choose from {valid_names}."
+    assert (
+        name in valid_names
+    ), f"Invalid dataset name: {name}. Please choose from {valid_names}."
 
     # Load the dataset
     train_dataset = load_dataset("wmt/wmt14", name=name, split="train")
@@ -77,9 +78,11 @@ def get_wmt_tokenizers(dataset_name, path="data"):
         raise FileNotFoundError(
             f"Tokenizers for {dataset_name} not found. Please train the tokenizers first using `python src/llm/wmt_data_utils.py`."
         )
-    
 
-def decode_wmt_tokens(tokenizer, tokens: Union[list[int], list[list[int]]], batch=False):
+
+def decode_wmt_tokens(
+    tokenizer, tokens: Union[list[int], list[list[int]]], batch=False
+):
     """
     Decode the tokens into a string. The tokenizer passed here should be loaded using `get_tokenizers`.
 
@@ -126,8 +129,12 @@ def _collate_fn(batch, source, target, tokenizers):
     tokenizers[target].enable_padding(pad_id=1, pad_token="<pad>")
 
     # tokenize the batches
-    tokenized_source_batch = [token.ids for token in tokenizers[source].encode_batch(source_batch)]
-    tokenized_target_batch = [token.ids for token in tokenizers[target].encode_batch(target_batch)]
+    tokenized_source_batch = [
+        token.ids for token in tokenizers[source].encode_batch(source_batch)
+    ]
+    tokenized_target_batch = [
+        token.ids for token in tokenizers[target].encode_batch(target_batch)
+    ]
 
     # torch tensors
     tokenized_source_batch = torch.tensor(tokenized_source_batch)
@@ -201,7 +208,8 @@ def create_separate_wmt_tokenizers(
         tokenizer = Tokenizer(models.BPE())
 
         # Define normalization pipeline
-        normalizer_list = normalizers.Sequence([
+        normalizer_list = normalizers.Sequence(
+            [
                 normalizers.NFD(),
                 normalizers.StripAccents(),  # Remove accents
             ]
