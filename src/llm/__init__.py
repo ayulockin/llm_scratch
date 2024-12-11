@@ -1,3 +1,13 @@
-from .wmt_dataset import get_dataset, get_dataloader
+from .wmt_data_utils import (
+    get_wmt_dataset,
+    get_wmt_dataloader,
+    get_wmt_tokenizers,
+    decode_wmt_tokens,
+)
 
-__all__ = [get_dataset, get_dataloader]
+__all__ = [
+    "get_wmt_dataset",
+    "get_wmt_dataloader",
+    "get_wmt_tokenizers",
+    "decode_wmt_tokens",
+]
