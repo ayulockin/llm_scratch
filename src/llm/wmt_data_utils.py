@@ -177,17 +177,17 @@ def create_separate_wmt_tokenizers(
     Create and train two separate tokenizers for Source and Target languages from the WMT dataset.
 
     Args:
-        vocab_size (int): Total vocabulary size for the tokenizers. If vocab size is 30000, english and german tokenizers will have 15000 tokens each.
+        vocab_size (int): Total vocabulary size for the tokenizers. If vocab size is 30000, source and target tokenizers will have 15000 tokens each.
         min_frequency (int): Minimum frequency for a token to be included in the vocabulary.
         special_tokens (list): List of special tokens to be included in the vocabulary.
         batch_size (int): Batch size for the iterator.
         dataset_name (str): The name of the dataset. Valid names are `de-en`, `fr-en`, `cs-en`, `hi-en`, `ru-en`.
 
     Returns:
-        Tuple[Tokenizer, Tokenizer]: The trained English and German tokenizers.
+        Tuple[Tokenizer, Tokenizer]: The trained Source and Target tokenizers.
     """
     # Load training dataset
-    print(f"Loading dataset WMT14:{dataset_name}...")
+    print(f"Loading dataset WMT14: {dataset_name}...")
     ds = get_wmt_dataset(dataset_name)["train"]
 
     # Verify that the specified languages exist in the dataset
@@ -221,7 +221,7 @@ def create_separate_wmt_tokenizers(
             show_progress=True,
         )
 
-        # Define batch iterator for English and German
+        # Define batch iterator for Source and Target
         def batch_iterator(lang):
             tok_dataset = ds.select_columns("translation")
             for batch in tok_dataset.iter(batch_size):
