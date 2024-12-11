@@ -1,4 +1,4 @@
-from .model import TransformerConfig, Transformer
+from .wmt_model import TransformerConfig, Transformer
 from .wmt_data_utils import (
     get_wmt_dataset,
     get_wmt_dataloader,
