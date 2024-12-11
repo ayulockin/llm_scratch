@@ -23,6 +23,7 @@ class FeedForward(nn.Module):
     ):
         super().__init__()
         self.layer1 = nn.Linear(model_dim, expansion_dim, bias=True)
+        self.activation = nn.ReLU()
         self.layer2 = nn.Linear(expansion_dim, model_dim, bias=True)
 
     def forward(
@@ -30,6 +31,7 @@ class FeedForward(nn.Module):
         inputs: Float32[Tensor, "batch seq_len model_dim"],
     ) -> Float32[Tensor, "batch seq_len model_dim"]:
         x = self.layer1(inputs)
+        x = self.activation(x)
         x = self.layer2(x)
         return x
 
