@@ -4,7 +4,7 @@ import math
 from torch import Tensor
 from torch import nn
 from dataclasses import dataclass
-from jaxtyping import Float32
+from jaxtyping import Float
 
 
 @dataclass
@@ -12,7 +12,7 @@ class TransformerConfig:
     model_dim: int
     expansion_dim: int
     num_heads: int
-    num_layers: int
+    num_blocks: int
 
 
 class FeedForward(nn.Module):
@@ -28,8 +28,8 @@ class FeedForward(nn.Module):
 
     def forward(
         self,
-        inputs: Float32[Tensor, "batch seq_len model_dim"],
-    ) -> Float32[Tensor, "batch seq_len model_dim"]:
+        inputs: Float[Tensor, "batch seq_len model_dim"],
+    ) -> Float[Tensor, "batch seq_len model_dim"]:
         x = self.layer1(inputs)
         x = self.activation(x)
         x = self.layer2(x)
@@ -51,11 +51,11 @@ class ScaledDotProductAttention(nn.Module):
 
     def forward(
         self,
-        query: Float32[Tensor, "batch seq_len model_dim"],
-        key: Float32[Tensor, "batch seq_len model_dim"],
-        value: Float32[Tensor, "batch seq_len model_dim"],
+        query: Float[Tensor, "batch seq_len model_dim"],
+        key: Float[Tensor, "batch seq_len model_dim"],
+        value: Float[Tensor, "batch seq_len model_dim"],
         is_causal: bool = False,
-    ) -> Float32[Tensor, "batch seq_len dim_v"]:
+    ) -> Float[Tensor, "batch seq_len dim_v"]:
         # project key and query
         key = self.W_key(key)
         query = self.W_query(query)
@@ -86,21 +86,25 @@ class MultiHeadAttention(nn.Module):
         num_heads: int,
     ):
         super().__init__()
+        assert model_dim % num_heads == 0, (
+            "model dimensions should be divisible by number of heads"
+            f"model_dim was {model_dim} and num_heads was {num_heads}"
+        )
         dim_k = dim_v = model_dim // num_heads
         self.projection_heads = list()
         for _ in range(num_heads):
             self.projection_heads.append(
                 ScaledDotProductAttention(model_dim=model_dim, dim_k=dim_k, dim_v=dim_v)
             )
-        self.W_out = nn.Linear(model_dim, model_dim)
+        self.W_out = nn.Linear(dim_v * num_heads, model_dim)
 
     def forward(
         self,
-        query: Float32[Tensor, "batch seq_len model_dim"],
-        key: Float32[Tensor, "batch seq_len model_dim"],
-        value: Float32[Tensor, "batch seq_len model_dim"],
-        is_causal: bool=False,
-    ) -> Float32[Tensor, "batch seq_len model_dim"]:
+        query: Float[Tensor, "batch seq_len model_dim"],
+        key: Float[Tensor, "batch seq_len model_dim"],
+        value: Float[Tensor, "batch seq_len model_dim"],
+        is_causal: bool = False,
+    ) -> Float[Tensor, "batch seq_len model_dim"]:
         outputs = list()
         for head in self.projection_heads:
             outputs.append(head(query, key, value, is_causal=is_causal))
@@ -110,7 +114,7 @@ class MultiHeadAttention(nn.Module):
         return outputs
 
 
-class EncoderLayer(nn.Module):
+class EncoderBlock(nn.Module):
     def __init__(
         self,
         model_dim: int,
@@ -128,17 +132,19 @@ class EncoderLayer(nn.Module):
         self.layer_norm2 = nn.LayerNorm(normalized_shape=model_dim)
 
     def forward(
-        self, inputs: Float32[Tensor, "batch enc_seq_len model_dim"]
-    ) -> Float32[Tensor, "batch enc_seq_len model_dim"]:
+        self, inputs: Float[Tensor, "batch enc_seq_len model_dim"]
+    ) -> Float[Tensor, "batch enc_seq_len model_dim"]:
         residual = inputs
 
         x = self.multi_head_attention(query=inputs, key=inputs, value=inputs)
-        x = self.layer_norm1(x) + residual
+        x = x + residual
+        x = self.layer_norm1(x)
 
         residual = x
 
         x = self.feed_forward(x)
-        x = self.layer_norm2(x) + residual
+        x = x + residual
+        x = self.layer_norm2(x)
         return x
 
 
@@ -146,15 +152,15 @@ class Encoder(nn.Module):
     def __init__(
         self,
         model_dim: int,
-        num_layers: int,
+        num_blocks: int,
         num_heads: int,
         expansion_dim: int,
     ):
         super().__init__()
         self.encoder_layers = list()
-        for _ in range(num_layers):
+        for _ in range(num_blocks):
             self.encoder_layers.append(
-                EncoderLayer(
+                EncoderBlock(
                     model_dim=model_dim,
                     num_heads=num_heads,
                     expansion_dim=expansion_dim,
@@ -163,16 +169,16 @@ class Encoder(nn.Module):
 
     def forward(
         self,
-        encoder_inputs: Float32[Tensor, "batch enc_seq_len model_dim"],
-    ) -> Float32[Tensor, "batch enc_seq_len model_dim"]:
+        encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],
+    ) -> Float[Tensor, "batch enc_seq_len model_dim"]:
         encoder_outputs = list()
         for encoder_layer in self.encoder_layers:
-            encoder_inputs = encoder_layer(encoder_inputs)
-            encoder_outputs.append(encoder_inputs)
+            encoder_input = encoder_layer(encoder_input)
+            encoder_outputs.append(encoder_input)
         return encoder_outputs
 
 
-class DecoderLayer(nn.Module):
+class DecoderBlock(nn.Module):
     def __init__(
         self,
         model_dim: int,
@@ -195,30 +201,33 @@ class DecoderLayer(nn.Module):
 
     def forward(
         self,
-        decoder_inputs: Float32[Tensor, "batch dec_seq_len model_dim"],
-        encoder_outputs: Float32[Tensor, "batch enc_seq_len model_dim"],
-    ) -> Float32[Tensor, "batch dec_seq_len model_dim"]:
-        residual = decoder_inputs
+        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],
+        encoder_outputs: Float[Tensor, "batch enc_seq_len model_dim"],
+    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:
+        residual = decoder_input
 
         x = self.masked_multi_head_attention(
-            query=decoder_inputs,
-            key=decoder_inputs,
-            value=decoder_inputs,
+            query=decoder_input,
+            key=decoder_input,
+            value=decoder_input,
             is_causal=True,
         )
-        x = self.layer_norm1(x) + residual
+        x = x + residual
+        x = self.layer_norm1(x)
 
         residual = x
 
         x = self.multi_head_attention(
             query=x, key=encoder_outputs, value=encoder_outputs
         )
-        x = self.layer_norm2(x) + residual
+        x = x + residual
+        x = self.layer_norm2(x)
 
         residual = x
 
         x = self.feed_forward(x)
-        x = self.layer_norm3(x) + residual
+        x = x + residual
+        x = self.layer_norm3(x)
         return x
 
 
@@ -226,15 +235,15 @@ class Decoder(nn.Module):
     def __init__(
         self,
         model_dim: int,
-        num_layers: int,
+        num_blocks: int,
         num_heads: int,
         expansion_dim: int,
     ):
         super().__init__()
         self.decoder_layers = list()
-        for _ in range(num_layers):
+        for _ in range(num_blocks):
             self.decoder_layers.append(
-                DecoderLayer(
+                DecoderBlock(
                     model_dim=model_dim,
                     num_heads=num_heads,
                     expansion_dim=expansion_dim,
@@ -243,12 +252,12 @@ class Decoder(nn.Module):
 
     def forward(
         self,
-        decoder_inputs: Float32[Tensor, "batch dec_seq_len model_dim"],
-        encoder_outputs: List[Float32[Tensor, "batch enc_seq_len model_dim"]],
-    ) -> Float32[Tensor, "batch dec_seq_len model_dim"]:
-        x = decoder_inputs
+        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],
+        encoder_outputs: List[Float[Tensor, "batch enc_seq_len model_dim"]],
+    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:
+        x = decoder_input
         for idx, decoder_layer in enumerate(self.decoder_layers):
-            x = decoder_layer(decoder_inputs=x, encoder_outputs=encoder_outputs[idx])
+            x = decoder_layer(decoder_input=x, encoder_outputs=encoder_outputs[idx])
         return x
 
 
@@ -260,26 +269,26 @@ class Transformer(nn.Module):
         super().__init__()
         self.encoder = Encoder(
             model_dim=config.model_dim,
-            num_layers=config.num_layers,
+            num_blocks=config.num_blocks,
             num_heads=config.num_heads,
             expansion_dim=config.expansion_dim,
         )
         self.decoder = Decoder(
             model_dim=config.model_dim,
-            num_layers=config.num_layers,
+            num_blocks=config.num_blocks,
             num_heads=config.num_heads,
             expansion_dim=config.expansion_dim,
         )
 
     def forward(
         self,
-        encoder_inputs: Float32[Tensor, "batch enc_seq_len model_dim"],
-        decoder_inputs: Float32[Tensor, "batch dec_seq_len model_dim"],
-    ) -> Float32[Tensor, "batch dec_seq_len model_dim"]:
+        encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],
+        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],
+    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:
         encoder_outputs = self.encoder(
-            encoder_inputs=encoder_inputs,
+            encoder_input=encoder_input,
         )  # this is a list of encoder outputs from each layer
-        decoder_outputs = self.decoder(
-            decoder_inputs=decoder_inputs, encoder_outputs=encoder_outputs
+        decoder_output = self.decoder(
+            decoder_input=decoder_input, encoder_outputs=encoder_outputs
         )
-        return decoder_outputs
+        return decoder_output
