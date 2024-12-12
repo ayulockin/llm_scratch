@@ -21,5 +21,9 @@ dependencies = [
 
 [tool.uv]
 dev-dependencies = [
+    "black>=24.10.0",
     "ipykernel>=6.29.5",
+    "isort>=5.13.2",
+    "mypy>=1.13.0",
+    "ruff>=0.8.0",
 ]

@@ -28,8 +28,8 @@ class FeedForward(nn.Module):
 
     def forward(
         self,
-        inputs: Float[Tensor, "batch seq_len model_dim"],
-    ) -> Float[Tensor, "batch seq_len model_dim"]:
+        inputs: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+    ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
         x = self.layer1(inputs)
         x = self.activation(x)
         x = self.layer2(x)
@@ -51,11 +51,11 @@ class ScaledDotProductAttention(nn.Module):
 
     def forward(
         self,
-        query: Float[Tensor, "batch seq_len model_dim"],
-        key: Float[Tensor, "batch seq_len model_dim"],
-        value: Float[Tensor, "batch seq_len model_dim"],
+        query: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+        key: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+        value: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
         is_causal: bool = False,
-    ) -> Float[Tensor, "batch seq_len dim_v"]:
+    ) -> Float[Tensor, "batch seq_len dim_v"]:  # type: ignore
         # project key and query
         key = self.W_key(key)
         query = self.W_query(query)
@@ -100,11 +100,11 @@ class MultiHeadAttention(nn.Module):
 
     def forward(
         self,
-        query: Float[Tensor, "batch seq_len model_dim"],
-        key: Float[Tensor, "batch seq_len model_dim"],
-        value: Float[Tensor, "batch seq_len model_dim"],
+        query: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+        key: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+        value: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
         is_causal: bool = False,
-    ) -> Float[Tensor, "batch seq_len model_dim"]:
+    ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
         outputs = list()
         for head in self.projection_heads:
             outputs.append(head(query, key, value, is_causal=is_causal))
@@ -132,8 +132,8 @@ class EncoderBlock(nn.Module):
         self.layer_norm2 = nn.LayerNorm(normalized_shape=model_dim)
 
     def forward(
-        self, inputs: Float[Tensor, "batch enc_seq_len model_dim"]
-    ) -> Float[Tensor, "batch enc_seq_len model_dim"]:
+        self, inputs: Float[Tensor, "batch enc_seq_len model_dim"]  # type: ignore
+    ) -> Float[Tensor, "batch enc_seq_len model_dim"]:  # type: ignore
         residual = inputs
 
         x = self.multi_head_attention(query=inputs, key=inputs, value=inputs)
@@ -169,8 +169,8 @@ class Encoder(nn.Module):
 
     def forward(
         self,
-        encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],
-    ) -> Float[Tensor, "batch enc_seq_len model_dim"]:
+        encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
+    ) -> Float[Tensor, "batch enc_seq_len model_dim"]:  # type: ignore
         encoder_outputs = list()
         for encoder_layer in self.encoder_layers:
             encoder_input = encoder_layer(encoder_input)
@@ -201,9 +201,9 @@ class DecoderBlock(nn.Module):
 
     def forward(
         self,
-        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],
-        encoder_outputs: Float[Tensor, "batch enc_seq_len model_dim"],
-    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:
+        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
+        encoder_outputs: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
+    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:  # type: ignore
         residual = decoder_input
 
         x = self.masked_multi_head_attention(
@@ -252,13 +252,28 @@ class Decoder(nn.Module):
 
     def forward(
         self,
-        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],
-        encoder_outputs: List[Float[Tensor, "batch enc_seq_len model_dim"]],
-    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:
+        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
+        encoder_outputs: List[Float[Tensor, "batch enc_seq_len model_dim"]],  # type: ignore
+    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:  # type: ignore
         x = decoder_input
         for idx, decoder_layer in enumerate(self.decoder_layers):
             x = decoder_layer(decoder_input=x, encoder_outputs=encoder_outputs[idx])
         return x
+
+
+class Embedding(nn.Module):
+    def __init__(self, model_dim: int, vocab_size: int):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, model_dim)
+        self.scale = math.sqrt(model_dim)
+
+    def forward(self, tokens: Float[Tensor, "batch seq_len"]) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
+        embedding = self.embedding(tokens) * self.scale
+        return embedding
+
+
+class PositionalEncoding(nn.Module):
+    pass
 
 
 class Transformer(nn.Module):
@@ -282,9 +297,9 @@ class Transformer(nn.Module):
 
     def forward(
         self,
-        encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],
-        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],
-    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:
+        encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
+        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
+    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:  # type: ignore
         encoder_outputs = self.encoder(
             encoder_input=encoder_input,
         )  # this is a list of encoder outputs from each layer

@@ -47,7 +47,9 @@ def get_wmt_dataset(name: str):
     ), f"Invalid dataset name: {name}. Please choose from {valid_names}."
 
     # Load the dataset
-    train_dataset = load_dataset("wmt/wmt14", name=name, split="train", num_proc=8) # speed up the loading of the dataset
+    train_dataset = load_dataset(
+        "wmt/wmt14", name=name, split="train", num_proc=8
+    )  # speed up the loading of the dataset
     val_dataset = load_dataset("wmt/wmt14", name=name, split="validation")
     test_dataset = load_dataset("wmt/wmt14", name=name, split="test")
 
