@@ -47,7 +47,7 @@ def get_wmt_dataset(name: str):
     ), f"Invalid dataset name: {name}. Please choose from {valid_names}."
 
     # Load the dataset
-    train_dataset = load_dataset("wmt/wmt14", name=name, split="train")
+    train_dataset = load_dataset("wmt/wmt14", name=name, split="train", num_proc=8) # speed up the loading of the dataset
     val_dataset = load_dataset("wmt/wmt14", name=name, split="validation")
     test_dataset = load_dataset("wmt/wmt14", name=name, split="test")
 
@@ -134,6 +134,11 @@ def _collate_fn(batch, source, target, tokenizers):
     ]
     tokenized_target_batch = [
         token.ids for token in tokenizers[target].encode_batch(target_batch)
+    ]
+    # shift the target tokens by 1 to the right side by adding the <s> token at the beginning.
+    tokenized_target_batch = [
+        [tokenizers[target].token_to_id("<s>")] + token
+        for token in tokenized_target_batch
     ]
 
     # torch tensors
