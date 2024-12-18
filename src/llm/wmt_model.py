@@ -273,7 +273,28 @@ class Embedding(nn.Module):
 
 
 class PositionalEncoding(nn.Module):
-    pass
+    def __init__(self, model_dim: int, max_seq_len: int):
+        super().__init__()
+        self.position_encoding = torch.zeros(
+            max_seq_len, model_dim
+        )  # [max_seq_len, model_dim]
+        print(self.position_encoding.shape)
+        positions = torch.arange(0, max_seq_len).unsqueeze(1)  # [max_seq_len, 1]
+        print(positions.shape)
+        div_term = 1 / (
+            torch.pow(10000, torch.arange(0, model_dim, 2) / model_dim)
+        )  # [model_dim//2]
+        print(div_term.shape)
+        freq = positions * div_term  # [max_seq_len, model_dim//2]
+        print(freq.shape)
+        # all the positions but even spaced dimensions
+        self.position_encoding[:, 0::2] = torch.sin(freq)
+        self.position_encoding[:, 1::2] = torch.cos(freq)
+
+    def forward(
+        self, inputs: Float[Tensor, "batch seq_len model_dim"]  # type: ignore
+    ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
+        return inputs + self.position_encoding[: inputs.size(1)]
 
 
 class Transformer(nn.Module):
