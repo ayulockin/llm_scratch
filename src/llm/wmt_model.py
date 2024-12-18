@@ -297,6 +297,20 @@ class PositionalEncoding(nn.Module):
         return inputs + self.position_encoding[: inputs.size(1)]
 
 
+class LMHead(nn.Module):
+    def __init__(self, model_dim: int, vocab_size: int):
+        super().__init__()
+        self.linear = nn.Linear(model_dim, vocab_size)
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(
+        self, inputs: Float[Tensor, "batch seq_len model_dim"]  # type: ignore
+    ) -> Float[Tensor, "batch seq_len vocab_size"]:  # type: ignore
+        x = self.linear(inputs)
+        x = self.softmax(x)
+        return x
+
+
 class Transformer(nn.Module):
     def __init__(
         self,
