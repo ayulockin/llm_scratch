@@ -13,6 +13,18 @@ class TransformerConfig:
     expansion_dim: int
     num_heads: int
     num_blocks: int
+    dropout_rate: float
+
+
+class ResidualDropout(nn.Module):
+    def __init__(self, dropout_rate: float):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout_rate)
+
+    def forward(
+        self, inputs: Float[Tensor, "batch seq_len model_dim"]  # type: ignore
+    ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
+        return self.dropout(inputs)
 
 
 class FeedForward(nn.Module):
@@ -120,6 +132,7 @@ class EncoderBlock(nn.Module):
         model_dim: int,
         num_heads: int,
         expansion_dim: int,
+        dropout_rate: float,
     ):
         super().__init__()
         self.multi_head_attention = MultiHeadAttention(
@@ -130,6 +143,7 @@ class EncoderBlock(nn.Module):
         )
         self.layer_norm1 = nn.LayerNorm(normalized_shape=model_dim)
         self.layer_norm2 = nn.LayerNorm(normalized_shape=model_dim)
+        self.residual_dropout = ResidualDropout(dropout_rate=dropout_rate)
 
     def forward(
         self, inputs: Float[Tensor, "batch enc_seq_len model_dim"]  # type: ignore
@@ -137,12 +151,14 @@ class EncoderBlock(nn.Module):
         residual = inputs
 
         x = self.multi_head_attention(query=inputs, key=inputs, value=inputs)
+        x = self.residual_dropout(x)
         x = x + residual
         x = self.layer_norm1(x)
 
         residual = x
 
         x = self.feed_forward(x)
+        x = self.residual_dropout(x)
         x = x + residual
         x = self.layer_norm2(x)
         return x
@@ -155,6 +171,7 @@ class Encoder(nn.Module):
         num_blocks: int,
         num_heads: int,
         expansion_dim: int,
+        dropout_rate: float,
     ):
         super().__init__()
         self.encoder_layers = list()
@@ -164,6 +181,7 @@ class Encoder(nn.Module):
                     model_dim=model_dim,
                     num_heads=num_heads,
                     expansion_dim=expansion_dim,
+                    dropout_rate=dropout_rate,
                 )
             )
 
@@ -184,6 +202,7 @@ class DecoderBlock(nn.Module):
         model_dim: int,
         num_heads: int,
         expansion_dim: int,
+        dropout_rate: float,
     ):
         super().__init__()
         self.masked_multi_head_attention = MultiHeadAttention(
@@ -198,7 +217,7 @@ class DecoderBlock(nn.Module):
         self.layer_norm1 = nn.LayerNorm(normalized_shape=model_dim)
         self.layer_norm2 = nn.LayerNorm(normalized_shape=model_dim)
         self.layer_norm3 = nn.LayerNorm(normalized_shape=model_dim)
-
+        self.residual_dropout = ResidualDropout(dropout_rate=dropout_rate)
     def forward(
         self,
         decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
@@ -212,6 +231,7 @@ class DecoderBlock(nn.Module):
             value=decoder_input,
             is_causal=True,
         )
+        x = self.residual_dropout(x)
         x = x + residual
         x = self.layer_norm1(x)
 
@@ -220,12 +240,14 @@ class DecoderBlock(nn.Module):
         x = self.multi_head_attention(
             query=x, key=encoder_outputs, value=encoder_outputs
         )
+        x = self.residual_dropout(x)
         x = x + residual
         x = self.layer_norm2(x)
 
         residual = x
 
         x = self.feed_forward(x)
+        x = self.residual_dropout(x)
         x = x + residual
         x = self.layer_norm3(x)
         return x
@@ -238,6 +260,7 @@ class Decoder(nn.Module):
         num_blocks: int,
         num_heads: int,
         expansion_dim: int,
+        dropout_rate: float,
     ):
         super().__init__()
         self.decoder_layers = list()
@@ -247,6 +270,7 @@ class Decoder(nn.Module):
                     model_dim=model_dim,
                     num_heads=num_heads,
                     expansion_dim=expansion_dim,
+                    dropout_rate=dropout_rate,
                 )
             )
 
@@ -273,7 +297,7 @@ class Embedding(nn.Module):
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, model_dim: int, max_seq_len: int):
+    def __init__(self, model_dim: int, max_seq_len: int, dropout_rate: float):
         super().__init__()
         self.position_encoding = torch.zeros(
             max_seq_len, model_dim
@@ -290,11 +314,14 @@ class PositionalEncoding(nn.Module):
         # all the positions but even spaced dimensions
         self.position_encoding[:, 0::2] = torch.sin(freq)
         self.position_encoding[:, 1::2] = torch.cos(freq)
+        self.residual_dropout = ResidualDropout(dropout_rate=dropout_rate)
 
     def forward(
         self, inputs: Float[Tensor, "batch seq_len model_dim"]  # type: ignore
     ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
-        return inputs + self.position_encoding[: inputs.size(1)]
+        x = inputs + self.position_encoding[: inputs.size(1)]
+        x = self.residual_dropout(x)
+        return x
 
 
 class LMHead(nn.Module):
@@ -322,12 +349,14 @@ class Transformer(nn.Module):
             num_blocks=config.num_blocks,
             num_heads=config.num_heads,
             expansion_dim=config.expansion_dim,
+            dropout_rate=config.dropout_rate,
         )
         self.decoder = Decoder(
             model_dim=config.model_dim,
             num_blocks=config.num_blocks,
             num_heads=config.num_heads,
             expansion_dim=config.expansion_dim,
+            dropout_rate=config.dropout_rate,
         )
 
     def forward(
