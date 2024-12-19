@@ -352,7 +352,7 @@ class Transformer(nn.Module):
         self.source_embedding = Embedding(
             model_dim=config.model_dim, vocab_size=config.vocab_src_size
         )
-        self.output_embedding = Embedding(
+        self.target_embedding = Embedding(
             model_dim=config.model_dim, vocab_size=config.vocab_tgt_size
         )
         self.positional_encoding = PositionalEncoding(
