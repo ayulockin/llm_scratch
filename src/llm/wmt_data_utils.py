@@ -180,6 +180,25 @@ def get_wmt_dataloader(
     )
 
 
+def get_wmt_dataloaders(
+    datasets: dict,
+    batch_size: int = 32,
+    source_lang: str = "en",
+    target_lang: str = "de",
+    tokenizer_path: str = "data",
+):
+    dataloaders = {}
+    for dataset_name, dataset in datasets.items():
+        dataloaders[dataset_name] = get_wmt_dataloader(
+            dataset=dataset,
+            batch_size=batch_size,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            tokenizer_path=tokenizer_path,
+        )
+    return dataloaders
+
+
 def create_separate_wmt_tokenizers(
     vocab_size: int = 30000,
     min_frequency: int = 2,
