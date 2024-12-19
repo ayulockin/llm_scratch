@@ -411,14 +411,14 @@ if __name__ == "__main__":
         dropout_rate=0.1,
         vocab_src_size=1500,
         vocab_tgt_size=1500,
-        max_seq_len=10,
+        max_seq_len=100,
     )
     model = Transformer(config=config)
     print(model)
 
     batch_size = 32
-    encoder_input = torch.randint(0, config.vocab_src_size, (batch_size, 10))
-    decoder_input = torch.randint(0, config.vocab_tgt_size, (batch_size, 10))
+    encoder_input = torch.randint(0, config.vocab_src_size, (batch_size, 55))
+    decoder_input = torch.randint(0, config.vocab_tgt_size, (batch_size, 48))
     print(encoder_input.shape)
     print(decoder_input.shape)
     print(model(encoder_input, decoder_input).shape)
