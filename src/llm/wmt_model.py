@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 import torch
 import math
 from torch import Tensor
@@ -190,6 +190,8 @@ class Encoder(nn.Module):
                     dropout_rate=dropout_rate,
                 )
             )
+        # this registers the layers as submodules
+        self.encoder_layers = nn.ModuleList(self.encoder_layers)
 
     def forward(
         self,
@@ -276,6 +278,8 @@ class Decoder(nn.Module):
                     dropout_rate=dropout_rate,
                 )
             )
+        # this registers the layers as submodules
+        self.decoder_layers = nn.ModuleList(self.decoder_layers)
 
     def forward(
         self,
