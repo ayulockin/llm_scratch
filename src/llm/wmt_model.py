@@ -388,7 +388,7 @@ class Transformer(nn.Module):
         encoder_input = self.positional_encoding(encoder_input)  # [batch, enc_seq_len, model_dim]
 
         # Embed the target input and add positional encoding
-        decoder_input = self.output_embedding(decoder_input)
+        decoder_input = self.target_embedding(decoder_input)
         decoder_input = self.positional_encoding(decoder_input)  # [batch, dec_seq_len, model_dim]
 
         # Encode the source input
