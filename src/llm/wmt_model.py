@@ -349,7 +349,7 @@ class Transformer(nn.Module):
         config: TransformerConfig,
     ):
         super().__init__()
-        self.input_embedding = Embedding(
+        self.source_embedding = Embedding(
             model_dim=config.model_dim, vocab_size=config.vocab_src_size
         )
         self.output_embedding = Embedding(
