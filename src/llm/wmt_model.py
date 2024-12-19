@@ -384,7 +384,7 @@ class Transformer(nn.Module):
         decoder_input: Float[Tensor, "batch dec_seq_len"],  # type: ignore
     ) -> Float[Tensor, "batch dec_seq_len vocab_tgt_size"]:  # type: ignore
         # Embed the source input and add positional encoding
-        encoder_input = self.input_embedding(encoder_input)
+        encoder_input = self.source_embedding(encoder_input)
         encoder_input = self.positional_encoding(encoder_input)  # [batch, enc_seq_len, model_dim]
 
         # Embed the target input and add positional encoding
