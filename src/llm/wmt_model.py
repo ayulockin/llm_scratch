@@ -320,6 +320,7 @@ class PositionalEncoding(nn.Module):
         # all the positions but even spaced dimensions
         self.position_encoding[:, 0::2] = torch.sin(freq)
         self.position_encoding[:, 1::2] = torch.cos(freq)
+
         self.residual_dropout = ResidualDropout(dropout_rate=dropout_rate)
 
     def forward(
@@ -334,13 +335,11 @@ class LMHead(nn.Module):
     def __init__(self, model_dim: int, vocab_size: int):
         super().__init__()
         self.linear = nn.Linear(model_dim, vocab_size)
-        self.softmax = nn.Softmax(dim=-1)
 
     def forward(
         self, inputs: Float[Tensor, "batch seq_len model_dim"]  # type: ignore
     ) -> Float[Tensor, "batch seq_len vocab_size"]:  # type: ignore
-        x = self.linear(inputs)
-        x = self.softmax(x)
+        x = self.linear(inputs) # raw logits
         return x
 
 
@@ -374,6 +373,9 @@ class Transformer(nn.Module):
             num_heads=config.num_heads,
             expansion_dim=config.expansion_dim,
             dropout_rate=config.dropout_rate,
+        )
+        self.lm_head = LMHead(
+            model_dim=config.model_dim, vocab_size=config.vocab_tgt_size
         )
 
     def forward(
@@ -413,3 +415,10 @@ if __name__ == "__main__":
     )
     model = Transformer(config=config)
     print(model)
+
+    batch_size = 32
+    encoder_input = torch.randint(0, config.vocab_src_size, (batch_size, 10))
+    decoder_input = torch.randint(0, config.vocab_tgt_size, (batch_size, 10))
+    print(encoder_input.shape)
+    print(decoder_input.shape)
+    print(model(encoder_input, decoder_input).shape)
