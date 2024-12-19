@@ -14,6 +14,9 @@ class TransformerConfig:
     num_heads: int
     num_blocks: int
     dropout_rate: float
+    vocab_src_size: int
+    vocab_tgt_size: int
+    max_seq_len: int
 
 
 class ResidualDropout(nn.Module):
@@ -22,10 +25,14 @@ class ResidualDropout(nn.Module):
         self.dropout = nn.Dropout(dropout_rate)
 
     def forward(
-        self, inputs: Float[Tensor, "batch seq_len model_dim"], residual: Float[Tensor, "batch seq_len model_dim"]  # type: ignore
+        self,
+        inputs: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+        residual: Optional[Float[Tensor, "batch seq_len model_dim"]] = None,  # type: ignore
     ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
         inputs = self.dropout(inputs)
-        return inputs + residual
+        if residual is not None:
+            return inputs + residual
+        return inputs
 
 
 class FeedForward(nn.Module):
@@ -298,15 +305,11 @@ class PositionalEncoding(nn.Module):
         self.position_encoding = torch.zeros(
             max_seq_len, model_dim
         )  # [max_seq_len, model_dim]
-        print(self.position_encoding.shape)
         positions = torch.arange(0, max_seq_len).unsqueeze(1)  # [max_seq_len, 1]
-        print(positions.shape)
         div_term = 1 / (
             torch.pow(10000, torch.arange(0, model_dim, 2) / model_dim)
         )  # [model_dim//2]
-        print(div_term.shape)
         freq = positions * div_term  # [max_seq_len, model_dim//2]
-        print(freq.shape)
         # all the positions but even spaced dimensions
         self.position_encoding[:, 0::2] = torch.sin(freq)
         self.position_encoding[:, 1::2] = torch.cos(freq)
@@ -340,6 +343,17 @@ class Transformer(nn.Module):
         config: TransformerConfig,
     ):
         super().__init__()
+        self.input_embedding = Embedding(
+            model_dim=config.model_dim, vocab_size=config.vocab_src_size
+        )
+        self.output_embedding = Embedding(
+            model_dim=config.model_dim, vocab_size=config.vocab_tgt_size
+        )
+        self.positional_encoding = PositionalEncoding(
+            model_dim=config.model_dim,
+            max_seq_len=config.max_seq_len,
+            dropout_rate=config.dropout_rate,
+        )
         self.encoder = Encoder(
             model_dim=config.model_dim,
             num_blocks=config.num_blocks,
@@ -360,10 +374,39 @@ class Transformer(nn.Module):
         encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
         decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
     ) -> Float[Tensor, "batch dec_seq_len model_dim"]:  # type: ignore
+        # Embed the source input and add positional encoding
+        encoder_input = self.input_embedding(encoder_input)
+        encoder_input = self.positional_encoding(encoder_input)
+
+        # Embed the target input and add positional encoding
+        decoder_input = self.output_embedding(decoder_input)
+        decoder_input = self.positional_encoding(decoder_input)
+
+        # Encode the source input
         encoder_outputs = self.encoder(
             encoder_input=encoder_input,
         )  # this is a list of encoder outputs from each layer
+
+        # Decode the target input
         decoder_output = self.decoder(
             decoder_input=decoder_input, encoder_outputs=encoder_outputs
         )
-        return decoder_output
+
+        # Get the logits for the next token
+        logits = self.lm_head(decoder_output)
+        return logits
+
+
+if __name__ == "__main__":
+    config = TransformerConfig(
+        model_dim=64,
+        expansion_dim=256,
+        num_heads=4,
+        num_blocks=2,
+        dropout_rate=0.1,
+        vocab_src_size=1500,
+        vocab_tgt_size=1500,
+        max_seq_len=10,
+    )
+    model = Transformer(config=config)
+    print(model)
