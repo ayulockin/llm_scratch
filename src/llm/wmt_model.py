@@ -116,6 +116,8 @@ class MultiHeadAttention(nn.Module):
             self.projection_heads.append(
                 ScaledDotProductAttention(model_dim=model_dim, dim_k=dim_k, dim_v=dim_v)
             )
+        # this registers the heads as submodules
+        self.projection_heads = nn.ModuleList(self.projection_heads)
         self.W_out = nn.Linear(dim_v * num_heads, model_dim)
 
     def forward(
