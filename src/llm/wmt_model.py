@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 import torch
 import math
 from torch import Tensor
@@ -13,6 +13,26 @@ class TransformerConfig:
     expansion_dim: int
     num_heads: int
     num_blocks: int
+    dropout_rate: float
+    vocab_src_size: int
+    vocab_tgt_size: int
+    max_seq_len: int
+
+
+class ResidualDropout(nn.Module):
+    def __init__(self, dropout_rate: float):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout_rate)
+
+    def forward(
+        self,
+        inputs: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+        residual: Optional[Float[Tensor, "batch seq_len model_dim"]] = None,  # type: ignore
+    ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
+        inputs = self.dropout(inputs)
+        if residual is not None:
+            return inputs + residual
+        return inputs
 
 
 class FeedForward(nn.Module):
@@ -28,8 +48,8 @@ class FeedForward(nn.Module):
 
     def forward(
         self,
-        inputs: Float[Tensor, "batch seq_len model_dim"],
-    ) -> Float[Tensor, "batch seq_len model_dim"]:
+        inputs: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+    ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
         x = self.layer1(inputs)
         x = self.activation(x)
         x = self.layer2(x)
@@ -51,11 +71,11 @@ class ScaledDotProductAttention(nn.Module):
 
     def forward(
         self,
-        query: Float[Tensor, "batch seq_len model_dim"],
-        key: Float[Tensor, "batch seq_len model_dim"],
-        value: Float[Tensor, "batch seq_len model_dim"],
+        query: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+        key: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+        value: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
         is_causal: bool = False,
-    ) -> Float[Tensor, "batch seq_len dim_v"]:
+    ) -> Float[Tensor, "batch seq_len dim_v"]:  # type: ignore
         # project key and query
         key = self.W_key(key)
         query = self.W_query(query)
@@ -96,15 +116,17 @@ class MultiHeadAttention(nn.Module):
             self.projection_heads.append(
                 ScaledDotProductAttention(model_dim=model_dim, dim_k=dim_k, dim_v=dim_v)
             )
+        # this registers the heads as submodules
+        self.projection_heads = nn.ModuleList(self.projection_heads)
         self.W_out = nn.Linear(dim_v * num_heads, model_dim)
 
     def forward(
         self,
-        query: Float[Tensor, "batch seq_len model_dim"],
-        key: Float[Tensor, "batch seq_len model_dim"],
-        value: Float[Tensor, "batch seq_len model_dim"],
+        query: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+        key: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+        value: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
         is_causal: bool = False,
-    ) -> Float[Tensor, "batch seq_len model_dim"]:
+    ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
         outputs = list()
         for head in self.projection_heads:
             outputs.append(head(query, key, value, is_causal=is_causal))
@@ -120,6 +142,7 @@ class EncoderBlock(nn.Module):
         model_dim: int,
         num_heads: int,
         expansion_dim: int,
+        dropout_rate: float,
     ):
         super().__init__()
         self.multi_head_attention = MultiHeadAttention(
@@ -130,20 +153,21 @@ class EncoderBlock(nn.Module):
         )
         self.layer_norm1 = nn.LayerNorm(normalized_shape=model_dim)
         self.layer_norm2 = nn.LayerNorm(normalized_shape=model_dim)
+        self.residual_dropout = ResidualDropout(dropout_rate=dropout_rate)
 
     def forward(
-        self, inputs: Float[Tensor, "batch enc_seq_len model_dim"]
-    ) -> Float[Tensor, "batch enc_seq_len model_dim"]:
+        self, inputs: Float[Tensor, "batch enc_seq_len model_dim"]  # type: ignore
+    ) -> Float[Tensor, "batch enc_seq_len model_dim"]:  # type: ignore
         residual = inputs
 
         x = self.multi_head_attention(query=inputs, key=inputs, value=inputs)
-        x = x + residual
+        x = self.residual_dropout(x, residual)
         x = self.layer_norm1(x)
 
         residual = x
 
         x = self.feed_forward(x)
-        x = x + residual
+        x = self.residual_dropout(x, residual)
         x = self.layer_norm2(x)
         return x
 
@@ -155,6 +179,7 @@ class Encoder(nn.Module):
         num_blocks: int,
         num_heads: int,
         expansion_dim: int,
+        dropout_rate: float,
     ):
         super().__init__()
         self.encoder_layers = list()
@@ -164,18 +189,21 @@ class Encoder(nn.Module):
                     model_dim=model_dim,
                     num_heads=num_heads,
                     expansion_dim=expansion_dim,
+                    dropout_rate=dropout_rate,
                 )
             )
+        # this registers the layers as submodules
+        self.encoder_layers = nn.ModuleList(self.encoder_layers)
 
     def forward(
         self,
-        encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],
-    ) -> Float[Tensor, "batch enc_seq_len model_dim"]:
-        encoder_outputs = list()
+        encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
+    ) -> Float[Tensor, "batch enc_seq_len model_dim"]:  # type: ignore
+        # We pass the input through each encoder layer and return the final output
         for encoder_layer in self.encoder_layers:
             encoder_input = encoder_layer(encoder_input)
-            encoder_outputs.append(encoder_input)
-        return encoder_outputs
+
+        return encoder_input
 
 
 class DecoderBlock(nn.Module):
@@ -184,6 +212,7 @@ class DecoderBlock(nn.Module):
         model_dim: int,
         num_heads: int,
         expansion_dim: int,
+        dropout_rate: float,
     ):
         super().__init__()
         self.masked_multi_head_attention = MultiHeadAttention(
@@ -198,12 +227,12 @@ class DecoderBlock(nn.Module):
         self.layer_norm1 = nn.LayerNorm(normalized_shape=model_dim)
         self.layer_norm2 = nn.LayerNorm(normalized_shape=model_dim)
         self.layer_norm3 = nn.LayerNorm(normalized_shape=model_dim)
-
+        self.residual_dropout = ResidualDropout(dropout_rate=dropout_rate)
     def forward(
         self,
-        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],
-        encoder_outputs: Float[Tensor, "batch enc_seq_len model_dim"],
-    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:
+        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
+        encoder_output: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
+    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:  # type: ignore
         residual = decoder_input
 
         x = self.masked_multi_head_attention(
@@ -212,21 +241,21 @@ class DecoderBlock(nn.Module):
             value=decoder_input,
             is_causal=True,
         )
-        x = x + residual
+        x = self.residual_dropout(x, residual)
         x = self.layer_norm1(x)
 
         residual = x
 
         x = self.multi_head_attention(
-            query=x, key=encoder_outputs, value=encoder_outputs
+            query=x, key=encoder_output, value=encoder_output
         )
-        x = x + residual
+        x = self.residual_dropout(x, residual)
         x = self.layer_norm2(x)
 
         residual = x
 
         x = self.feed_forward(x)
-        x = x + residual
+        x = self.residual_dropout(x, residual)
         x = self.layer_norm3(x)
         return x
 
@@ -238,6 +267,7 @@ class Decoder(nn.Module):
         num_blocks: int,
         num_heads: int,
         expansion_dim: int,
+        dropout_rate: float,
     ):
         super().__init__()
         self.decoder_layers = list()
@@ -247,17 +277,69 @@ class Decoder(nn.Module):
                     model_dim=model_dim,
                     num_heads=num_heads,
                     expansion_dim=expansion_dim,
+                    dropout_rate=dropout_rate,
                 )
             )
+        # this registers the layers as submodules
+        self.decoder_layers = nn.ModuleList(self.decoder_layers)
 
     def forward(
         self,
-        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],
-        encoder_outputs: List[Float[Tensor, "batch enc_seq_len model_dim"]],
-    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:
+        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
+        encoder_output: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
+    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:  # type: ignore
         x = decoder_input
-        for idx, decoder_layer in enumerate(self.decoder_layers):
-            x = decoder_layer(decoder_input=x, encoder_outputs=encoder_outputs[idx])
+        for decoder_layer in self.decoder_layers:
+            x = decoder_layer(decoder_input=x, encoder_output=encoder_output)
+        return x
+
+
+class Embedding(nn.Module):
+    def __init__(self, model_dim: int, vocab_size: int):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, model_dim)
+        self.scale = math.sqrt(model_dim)
+
+    def forward(self, tokens: Float[Tensor, "batch seq_len"]) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
+        # as suggested in the paper (https://arxiv.org/abs/1706.03762) in section 3.4
+        embedding = self.embedding(tokens) * self.scale
+        return embedding
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, model_dim: int, max_seq_len: int, dropout_rate: float):
+        super().__init__()
+        self.position_encoding = torch.zeros(
+            max_seq_len, model_dim
+        )  # [max_seq_len, model_dim]
+        positions = torch.arange(0, max_seq_len).unsqueeze(1)  # [max_seq_len, 1]
+        div_term = 1 / (
+            torch.pow(10000, torch.arange(0, model_dim, 2) / model_dim)
+        )  # [model_dim//2]
+        freq = positions * div_term  # [max_seq_len, model_dim//2]
+        # all the positions but even spaced dimensions
+        self.position_encoding[:, 0::2] = torch.sin(freq)
+        self.position_encoding[:, 1::2] = torch.cos(freq)
+
+        self.residual_dropout = ResidualDropout(dropout_rate=dropout_rate)
+
+    def forward(
+        self, inputs: Float[Tensor, "batch seq_len model_dim"]  # type: ignore
+    ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
+        x = inputs + self.position_encoding[: inputs.size(1)]
+        x = self.residual_dropout(x)
+        return x
+
+
+class LMHead(nn.Module):
+    def __init__(self, model_dim: int, vocab_size: int):
+        super().__init__()
+        self.linear = nn.Linear(model_dim, vocab_size)
+
+    def forward(
+        self, inputs: Float[Tensor, "batch seq_len model_dim"]  # type: ignore
+    ) -> Float[Tensor, "batch seq_len vocab_size"]:  # type: ignore
+        x = self.linear(inputs) # raw logits
         return x
 
 
@@ -267,28 +349,76 @@ class Transformer(nn.Module):
         config: TransformerConfig,
     ):
         super().__init__()
+        self.source_embedding = Embedding(
+            model_dim=config.model_dim, vocab_size=config.vocab_src_size
+        )
+        self.target_embedding = Embedding(
+            model_dim=config.model_dim, vocab_size=config.vocab_tgt_size
+        )
+        self.positional_encoding = PositionalEncoding(
+            model_dim=config.model_dim,
+            max_seq_len=config.max_seq_len,
+            dropout_rate=config.dropout_rate,
+        )
         self.encoder = Encoder(
             model_dim=config.model_dim,
             num_blocks=config.num_blocks,
             num_heads=config.num_heads,
             expansion_dim=config.expansion_dim,
+            dropout_rate=config.dropout_rate,
         )
         self.decoder = Decoder(
             model_dim=config.model_dim,
             num_blocks=config.num_blocks,
             num_heads=config.num_heads,
             expansion_dim=config.expansion_dim,
+            dropout_rate=config.dropout_rate,
+        )
+        self.lm_head = LMHead(
+            model_dim=config.model_dim, vocab_size=config.vocab_tgt_size
         )
 
     def forward(
         self,
-        encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],
-        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],
-    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:
-        encoder_outputs = self.encoder(
-            encoder_input=encoder_input,
-        )  # this is a list of encoder outputs from each layer
-        decoder_output = self.decoder(
-            decoder_input=decoder_input, encoder_outputs=encoder_outputs
-        )
-        return decoder_output
+        encoder_input: Float[Tensor, "batch enc_seq_len"],  # type: ignore
+        decoder_input: Float[Tensor, "batch dec_seq_len"],  # type: ignore
+    ) -> Float[Tensor, "batch dec_seq_len vocab_tgt_size"]:  # type: ignore
+        # Embed the source input and add positional encoding
+        encoder_input = self.source_embedding(encoder_input)
+        encoder_input = self.positional_encoding(encoder_input)  # [batch, enc_seq_len, model_dim]
+
+        # Embed the target input and add positional encoding
+        decoder_input = self.target_embedding(decoder_input)
+        decoder_input = self.positional_encoding(decoder_input)  # [batch, dec_seq_len, model_dim]
+
+        # Encode the source input
+        encoder_output = self.encoder(encoder_input)  # [batch, enc_seq_len, model_dim]
+
+        # Decode the target input
+        decoder_output = self.decoder(decoder_input, encoder_output)  # [batch, dec_seq_len, model_dim]
+
+        # Get the logits for the next token
+        logits = self.lm_head(decoder_output)  # [batch, dec_seq_len, vocab_size]
+        return logits
+
+
+if __name__ == "__main__":
+    config = TransformerConfig(
+        model_dim=64,
+        expansion_dim=256,
+        num_heads=4,
+        num_blocks=2,
+        dropout_rate=0.1,
+        vocab_src_size=1500,
+        vocab_tgt_size=1500,
+        max_seq_len=10,
+    )
+    model = Transformer(config=config)
+    print(model)
+
+    batch_size = 32
+    encoder_input = torch.randint(0, config.vocab_src_size, (batch_size, 10))
+    decoder_input = torch.randint(0, config.vocab_tgt_size, (batch_size, 10))
+    print(encoder_input.shape)
+    print(decoder_input.shape)
+    print(model(encoder_input, decoder_input).shape)
