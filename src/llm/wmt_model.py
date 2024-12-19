@@ -199,11 +199,11 @@ class Encoder(nn.Module):
         self,
         encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
     ) -> Float[Tensor, "batch enc_seq_len model_dim"]:  # type: ignore
-        encoder_outputs = list()
+        # We pass the input through each encoder layer and return the final output
         for encoder_layer in self.encoder_layers:
             encoder_input = encoder_layer(encoder_input)
-            encoder_outputs.append(encoder_input)
-        return encoder_outputs
+
+        return encoder_input
 
 
 class DecoderBlock(nn.Module):
@@ -231,7 +231,7 @@ class DecoderBlock(nn.Module):
     def forward(
         self,
         decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
-        encoder_outputs: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
+        encoder_output: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
     ) -> Float[Tensor, "batch dec_seq_len model_dim"]:  # type: ignore
         residual = decoder_input
 
@@ -247,7 +247,7 @@ class DecoderBlock(nn.Module):
         residual = x
 
         x = self.multi_head_attention(
-            query=x, key=encoder_outputs, value=encoder_outputs
+            query=x, key=encoder_output, value=encoder_output
         )
         x = self.residual_dropout(x, residual)
         x = self.layer_norm2(x)
@@ -286,11 +286,11 @@ class Decoder(nn.Module):
     def forward(
         self,
         decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
-        encoder_outputs: List[Float[Tensor, "batch enc_seq_len model_dim"]],  # type: ignore
+        encoder_output: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
     ) -> Float[Tensor, "batch dec_seq_len model_dim"]:  # type: ignore
         x = decoder_input
-        for idx, decoder_layer in enumerate(self.decoder_layers):
-            x = decoder_layer(decoder_input=x, encoder_outputs=encoder_outputs[idx])
+        for decoder_layer in self.decoder_layers:
+            x = decoder_layer(decoder_input=x, encoder_output=encoder_output)
         return x
 
 
@@ -378,29 +378,25 @@ class Transformer(nn.Module):
 
     def forward(
         self,
-        encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
-        decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
-    ) -> Float[Tensor, "batch dec_seq_len model_dim"]:  # type: ignore
+        encoder_input: Float[Tensor, "batch enc_seq_len"],  # type: ignore
+        decoder_input: Float[Tensor, "batch dec_seq_len"],  # type: ignore
+    ) -> Float[Tensor, "batch dec_seq_len vocab_tgt_size"]:  # type: ignore
         # Embed the source input and add positional encoding
         encoder_input = self.input_embedding(encoder_input)
-        encoder_input = self.positional_encoding(encoder_input)
+        encoder_input = self.positional_encoding(encoder_input)  # [batch, enc_seq_len, model_dim]
 
         # Embed the target input and add positional encoding
         decoder_input = self.output_embedding(decoder_input)
-        decoder_input = self.positional_encoding(decoder_input)
+        decoder_input = self.positional_encoding(decoder_input)  # [batch, dec_seq_len, model_dim]
 
         # Encode the source input
-        encoder_outputs = self.encoder(
-            encoder_input=encoder_input,
-        )  # this is a list of encoder outputs from each layer
+        encoder_output = self.encoder(encoder_input)  # [batch, enc_seq_len, model_dim]
 
         # Decode the target input
-        decoder_output = self.decoder(
-            decoder_input=decoder_input, encoder_outputs=encoder_outputs
-        )
+        decoder_output = self.decoder(decoder_input, encoder_output)  # [batch, dec_seq_len, model_dim]
 
         # Get the logits for the next token
-        logits = self.lm_head(decoder_output)
+        logits = self.lm_head(decoder_output)  # [batch, dec_seq_len, vocab_size]
         return logits
 
 
