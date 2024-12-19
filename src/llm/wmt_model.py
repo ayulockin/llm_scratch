@@ -22,9 +22,10 @@ class ResidualDropout(nn.Module):
         self.dropout = nn.Dropout(dropout_rate)
 
     def forward(
-        self, inputs: Float[Tensor, "batch seq_len model_dim"]  # type: ignore
+        self, inputs: Float[Tensor, "batch seq_len model_dim"], residual: Float[Tensor, "batch seq_len model_dim"]  # type: ignore
     ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
-        return self.dropout(inputs)
+        inputs = self.dropout(inputs)
+        return inputs + residual
 
 
 class FeedForward(nn.Module):
@@ -151,15 +152,13 @@ class EncoderBlock(nn.Module):
         residual = inputs
 
         x = self.multi_head_attention(query=inputs, key=inputs, value=inputs)
-        x = self.residual_dropout(x)
-        x = x + residual
+        x = self.residual_dropout(x, residual)
         x = self.layer_norm1(x)
 
         residual = x
 
         x = self.feed_forward(x)
-        x = self.residual_dropout(x)
-        x = x + residual
+        x = self.residual_dropout(x, residual)
         x = self.layer_norm2(x)
         return x
 
@@ -231,8 +230,7 @@ class DecoderBlock(nn.Module):
             value=decoder_input,
             is_causal=True,
         )
-        x = self.residual_dropout(x)
-        x = x + residual
+        x = self.residual_dropout(x, residual)
         x = self.layer_norm1(x)
 
         residual = x
@@ -240,15 +238,13 @@ class DecoderBlock(nn.Module):
         x = self.multi_head_attention(
             query=x, key=encoder_outputs, value=encoder_outputs
         )
-        x = self.residual_dropout(x)
-        x = x + residual
+        x = self.residual_dropout(x, residual)
         x = self.layer_norm2(x)
 
         residual = x
 
         x = self.feed_forward(x)
-        x = self.residual_dropout(x)
-        x = x + residual
+        x = self.residual_dropout(x, residual)
         x = self.layer_norm3(x)
         return x
 
