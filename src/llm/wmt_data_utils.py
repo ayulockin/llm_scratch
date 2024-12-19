@@ -137,7 +137,7 @@ def _collate_fn(batch, source, target, tokenizers):
     tokenized_target_batch = [
         token.ids for token in tokenizers[target].encode_batch(target_batch)
     ]
-    # shift the target tokens by 1 to the right side by adding the <s> token at the beginning.
+    # Add start token (<s>) to beginning of each target sequence to shift tokens right by 1.
     tokenized_target_batch = [
         [tokenizers[target].token_to_id("<s>")] + token
         for token in tokenized_target_batch

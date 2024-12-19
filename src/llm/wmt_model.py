@@ -301,6 +301,7 @@ class Embedding(nn.Module):
         self.scale = math.sqrt(model_dim)
 
     def forward(self, tokens: Float[Tensor, "batch seq_len"]) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
+        # as suggested in the paper (https://arxiv.org/abs/1706.03762) in section 3.4
         embedding = self.embedding(tokens) * self.scale
         return embedding
 
