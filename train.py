@@ -13,6 +13,9 @@ class TrainerConfig:
     learning_rate = 1e-4
     max_len = 256
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    adam_beta_1 = 0.91
+    adam_beta_2 = 0.98
+    adam_eps = 1e-09
 
 
 transformer_config = TransformerConfig(
@@ -27,8 +30,23 @@ transformer_config = TransformerConfig(
 )
 
 
-def train_step(data, modelxs):
-    pass
+def train_step(batch: tuple[torch.Tensor, torch.Tensor], model: nn.Module, optimizer: torch.optim.Optimizer, loss_fn: nn.Module):
+    # move the data to the device
+    src_tokens, tgt_tokens = batch
+    src_tokens = src_tokens.to(trainer_config.device)
+    tgt_tokens = tgt_tokens.to(trainer_config.device)
+    
+    # forward pass and loss calculation
+    optimizer.zero_grad()
+    output = model(src_tokens, tgt_tokens)
+    # softmax to get the logits
+    logits = torch.log_softmax(output, dim=-1)
+    loss = loss_fn(logits, tgt_tokens)
+    loss.backward()
+    optimizer.step()
+
+
+    return model
 
 
 if __name__ == "__main__":
@@ -46,9 +64,20 @@ if __name__ == "__main__":
     )
     print(dataloaders)
 
+    print(next(iter(dataloaders["train"])))
+
     model = Transformer(config=transformer_config)
+    model.to(trainer_config.device)
     print(model)
 
-    for epoch in range(trainer_config.num_epochs):
-        for data in dataloaders["train"]:
-            train_step(data, model)
+    # optimizer
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=trainer_config.learning_rate,
+        betas=(trainer_config.adam_beta_1, trainer_config.adam_beta_2),
+        eps=trainer_config.adam_eps,
+    )
+
+    # TODO: add learning rate scheduler
+
+

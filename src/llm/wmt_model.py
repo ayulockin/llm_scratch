@@ -422,3 +422,8 @@ if __name__ == "__main__":
     print(encoder_input.shape)
     print(decoder_input.shape)
     print(model(encoder_input, decoder_input).shape)
+    print(torch.softmax(model(encoder_input, decoder_input), dim=-1))
+    print(torch.softmax(model(encoder_input, decoder_input), dim=-1).shape)
+
+    print(torch.argmax(torch.softmax(model(encoder_input, decoder_input), dim=-1), dim=-1))
+    print(torch.argmax(torch.softmax(model(encoder_input, decoder_input), dim=-1), dim=-1).shape)
