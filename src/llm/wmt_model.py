@@ -74,6 +74,7 @@ class ScaledDotProductAttention(nn.Module):
         query: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
         key: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
         value: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+        attention_mask: Optional[Float[Tensor, "batch seq_len"]] = None,
         is_causal: bool = False,
     ) -> Float[Tensor, "batch seq_len dim_v"]:  # type: ignore
         # project key and query
@@ -88,6 +89,20 @@ class ScaledDotProductAttention(nn.Module):
                 mask=torch.triu(torch.ones_like(scaled_similarity).bool(), diagonal=1),
                 value=-torch.inf,
             )
+
+        if attention_mask is not None:
+            # attention mask should be a square matrix of shape [batch, seq_len, seq_len]
+            # TODO: .size is bad for optimization so handle this better
+            attention_mask = attention_mask.unsqueeze(1).expand(
+                attention_mask.size(0), attention_mask.size(1), attention_mask.size(1)
+            )
+            scaled_similarity = scaled_similarity.masked_fill(
+                # reversing the mask because we want to mask out the padding tokens (True in attention mask
+                # means padding token)
+                mask=~attention_mask,
+                value=-torch.inf,
+            )
+
         attention_scores = torch.softmax(
             scaled_similarity, dim=-1
         )  # Careful with the `dim`
@@ -125,11 +140,20 @@ class MultiHeadAttention(nn.Module):
         query: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
         key: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
         value: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
+        attention_mask: Optional[Float[Tensor, "batch seq_len"]] = None,
         is_causal: bool = False,
     ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
         outputs = list()
         for head in self.projection_heads:
-            outputs.append(head(query, key, value, is_causal=is_causal))
+            outputs.append(
+                head(
+                    query,
+                    key,
+                    value,
+                    attention_mask=attention_mask,
+                    is_causal=is_causal,
+                )
+            )
 
         outputs = torch.concat(outputs, dim=-1)
         outputs = self.W_out(outputs)
@@ -156,11 +180,15 @@ class EncoderBlock(nn.Module):
         self.residual_dropout = ResidualDropout(dropout_rate=dropout_rate)
 
     def forward(
-        self, inputs: Float[Tensor, "batch enc_seq_len model_dim"]  # type: ignore
+        self,
+        inputs: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
+        attention_mask: Optional[Float[Tensor, "batch enc_seq_len"]] = None,
     ) -> Float[Tensor, "batch enc_seq_len model_dim"]:  # type: ignore
         residual = inputs
 
-        x = self.multi_head_attention(query=inputs, key=inputs, value=inputs)
+        x = self.multi_head_attention(
+            query=inputs, key=inputs, value=inputs, attention_mask=attention_mask
+        )
         x = self.residual_dropout(x, residual)
         x = self.layer_norm1(x)
 
@@ -198,10 +226,13 @@ class Encoder(nn.Module):
     def forward(
         self,
         encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
+        attention_mask: Optional[Float[Tensor, "batch enc_seq_len"]] = None,
     ) -> Float[Tensor, "batch enc_seq_len model_dim"]:  # type: ignore
         # We pass the input through each encoder layer and return the final output
         for encoder_layer in self.encoder_layers:
-            encoder_input = encoder_layer(encoder_input)
+            encoder_input = encoder_layer(
+                encoder_input, attention_mask=attention_mask
+            )
 
         return encoder_input
 
@@ -232,6 +263,7 @@ class DecoderBlock(nn.Module):
         self,
         decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
         encoder_output: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
+        attention_mask: Optional[Float[Tensor, "batch dec_seq_len"]] = None,
     ) -> Float[Tensor, "batch dec_seq_len model_dim"]:  # type: ignore
         residual = decoder_input
 
@@ -239,6 +271,7 @@ class DecoderBlock(nn.Module):
             query=decoder_input,
             key=decoder_input,
             value=decoder_input,
+            attention_mask=attention_mask,
             is_causal=True,
         )
         x = self.residual_dropout(x, residual)
@@ -247,7 +280,10 @@ class DecoderBlock(nn.Module):
         residual = x
 
         x = self.multi_head_attention(
-            query=x, key=encoder_output, value=encoder_output
+            query=x,
+            key=encoder_output,
+            value=encoder_output,
+            attention_mask=attention_mask,
         )
         x = self.residual_dropout(x, residual)
         x = self.layer_norm2(x)
@@ -287,10 +323,15 @@ class Decoder(nn.Module):
         self,
         decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
         encoder_output: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
+        attention_mask: Optional[Float[Tensor, "batch dec_seq_len"]] = None,
     ) -> Float[Tensor, "batch dec_seq_len model_dim"]:  # type: ignore
         x = decoder_input
         for decoder_layer in self.decoder_layers:
-            x = decoder_layer(decoder_input=x, encoder_output=encoder_output)
+            x = decoder_layer(
+                decoder_input=x,
+                encoder_output=encoder_output,
+                attention_mask=attention_mask,
+            )
         return x
 
 
@@ -382,6 +423,8 @@ class Transformer(nn.Module):
         self,
         encoder_input: Float[Tensor, "batch enc_seq_len"],  # type: ignore
         decoder_input: Float[Tensor, "batch dec_seq_len"],  # type: ignore
+        encoder_attention_mask: Optional[Float[Tensor, "batch enc_seq_len"]] = None,
+        decoder_attention_mask: Optional[Float[Tensor, "batch dec_seq_len"]] = None,
     ) -> Float[Tensor, "batch dec_seq_len vocab_tgt_size"]:  # type: ignore
         # Embed the source input and add positional encoding
         encoder_input = self.source_embedding(encoder_input)
@@ -392,10 +435,16 @@ class Transformer(nn.Module):
         decoder_input = self.positional_encoding(decoder_input)  # [batch, dec_seq_len, model_dim]
 
         # Encode the source input
-        encoder_output = self.encoder(encoder_input)  # [batch, enc_seq_len, model_dim]
+        encoder_output = self.encoder(
+            encoder_input, attention_mask=encoder_attention_mask
+        )  # [batch, enc_seq_len, model_dim]
 
         # Decode the target input
-        decoder_output = self.decoder(decoder_input, encoder_output)  # [batch, dec_seq_len, model_dim]
+        decoder_output = self.decoder(
+            decoder_input,
+            encoder_output,
+            attention_mask=decoder_attention_mask,
+        )  # [batch, dec_seq_len, model_dim]
 
         # Get the logits for the next token
         logits = self.lm_head(decoder_output)  # [batch, dec_seq_len, vocab_size]
@@ -416,14 +465,27 @@ if __name__ == "__main__":
     model = Transformer(config=config)
     print(model)
 
-    batch_size = 32
+    batch_size = 2
+    padded_seq_len = 60
     encoder_input = torch.randint(0, config.vocab_src_size, (batch_size, 55))
+    encoder_input = torch.cat([encoder_input, torch.ones((batch_size, padded_seq_len - 55), dtype=torch.int64)], dim=-1)
     decoder_input = torch.randint(0, config.vocab_tgt_size, (batch_size, 48))
-    print(encoder_input.shape)
-    print(decoder_input.shape)
-    print(model(encoder_input, decoder_input).shape)
-    print(torch.softmax(model(encoder_input, decoder_input), dim=-1))
-    print(torch.softmax(model(encoder_input, decoder_input), dim=-1).shape)
+    decoder_input = torch.cat([decoder_input, torch.ones((batch_size, padded_seq_len - 48), dtype=torch.int64)], dim=-1)
+    print(f"{encoder_input.shape=}")
+    print(f"{decoder_input.shape=}")
 
-    print(torch.argmax(torch.softmax(model(encoder_input, decoder_input), dim=-1), dim=-1))
-    print(torch.argmax(torch.softmax(model(encoder_input, decoder_input), dim=-1), dim=-1).shape)
+    encoder_attention_mask = encoder_input != 1
+    decoder_attention_mask = decoder_input != 1
+    print(f"{encoder_attention_mask.shape=}")
+    print(f"{decoder_attention_mask.shape=}")
+    print(f"{encoder_attention_mask=}")
+    print(f"{decoder_attention_mask=}")
+
+    out = model(encoder_input, decoder_input, encoder_attention_mask, decoder_attention_mask)
+    print(f"{out.shape=}")
+    print(f"{out=}")
+    print(f"{torch.softmax(out, dim=-1)=}")
+    print(f"{torch.softmax(out, dim=-1).shape=}")
+
+    print(f"{torch.argmax(torch.softmax(out, dim=-1), dim=-1)=}")
+    print(f"{torch.argmax(torch.softmax(out, dim=-1), dim=-1).shape=}")
