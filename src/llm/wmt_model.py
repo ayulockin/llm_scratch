@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional
 
 import torch
 from jaxtyping import Float
@@ -58,109 +58,101 @@ class FeedForward(nn.Module):
 
 
 class ScaledDotProductAttention(nn.Module):
-    def __init__(
-        self,
-        model_dim: int,
-        dim_k: int,
-        dim_v: int,
-    ):
+    def __init__(self, dim_k):
         super().__init__()
-        self.W_query = nn.Linear(model_dim, dim_k, bias=False)
-        self.W_key = nn.Linear(model_dim, dim_k, bias=False)
-        self.W_value = nn.Linear(model_dim, dim_v, bias=False)
-        self.dim_k = dim_k
+        self.scale = math.sqrt(dim_k)
 
-    def forward(
-        self,
-        query: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
-        key: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
-        value: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
-        attention_mask: Optional[Float[Tensor, "batch seq_len seq_len"]] = None,
-        is_causal: bool = False,
-    ) -> Float[Tensor, "batch seq_len dim_v"]:  # type: ignore
-        # project key and query
-        key = self.W_key(key)
-        query = self.W_query(query)
+    def forward(self, 
+        q: torch.Tensor, 
+        k: torch.Tensor, 
+        v: torch.Tensor, 
+        attn_mask: torch.Tensor = None,
+        is_causal: bool = False):
+        """
+        q, k, v: [batch, heads, seq_len, dim_k]
+        attn_mask: [batch, 1, q_len, k_len] or [batch, heads, q_len, k_len] (various shapes are possible)
+        """
+        # (B, heads, q_len, dim_k) x (B, heads, dim_k, k_len) -> (B, heads, q_len, k_len)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / self.scale
 
-        similarity = torch.matmul(query, torch.permute(key, dims=(0, 2, 1)))
-        scaled_similarity = torch.divide(similarity, math.sqrt(self.dim_k))
-
+        # Causal mask (upper triangular)
         if is_causal:
-            scaled_similarity = scaled_similarity.masked_fill(
-                mask=torch.triu(torch.ones_like(scaled_similarity).bool(), diagonal=1),
-                value=-torch.inf,
+            # shape is [q_len, k_len]
+            causal_mask = torch.triu(
+                torch.ones_like(scores, dtype=torch.bool), diagonal=1
             )
+            scores = scores.masked_fill(causal_mask, float('-inf'))
 
-        if attention_mask is not None:
-            scaled_similarity = scaled_similarity.masked_fill(
-                # reversing the mask because we want to mask out the padding tokens (True in attention mask
-                # means padding token)
-                mask=~attention_mask,
-                value=-torch.inf,
-            )
+        if attn_mask is not None:
+            # You might need to ensure broadcast shape: e.g. [batch, heads, q_len, k_len]
+            # Typically 'True' in the mask means "disallowed / pad" => fill with -inf
+            scores = scores.masked_fill(attn_mask, float('-inf'))
 
-        attention_scores = torch.softmax(
-            scaled_similarity, dim=-1
-        )  # Careful with the `dim`
+        attn = torch.softmax(scores, dim=-1)
 
-        # If a row is fully -inf, the softmax is all NaN. We can clamp that row to 0.
-        # This usually happens with short sequences. We can safely ignore these rows by
-        # clamping them to 0.
-        mask_invalid = torch.isnan(attention_scores)
+        # Detect NaN (fully -inf row). If you want to clamp:
+        mask_invalid = torch.isnan(attn)
         if mask_invalid.any():
-            attention_scores[mask_invalid] = 0.0
+            attn = attn.masked_fill(mask_invalid, 0.0)
 
-        # project the value
-        value = self.W_value(value)
-        outputs = torch.matmul(attention_scores, value)
-
-        return outputs
+        # Multiply by values: (B, heads, q_len, k_len) x (B, heads, k_len, dim_k) -> (B, heads, q_len, dim_k)
+        out = torch.matmul(attn, v)
+        return out
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(
-        self,
-        model_dim: int,
-        num_heads: int,
-    ):
+    def __init__(self, model_dim: int, num_heads: int):
         super().__init__()
         assert model_dim % num_heads == 0, (
-            "model dimensions should be divisible by number of heads"
-            f"model_dim was {model_dim} and num_heads was {num_heads}"
+            f"model_dim={model_dim} must be divisible by num_heads={num_heads}"
         )
-        dim_k = dim_v = model_dim // num_heads
-        self.projection_heads = list()
-        for _ in range(num_heads):
-            self.projection_heads.append(
-                ScaledDotProductAttention(model_dim=model_dim, dim_k=dim_k, dim_v=dim_v)
-            )
-        # this registers the heads as submodules
-        self.projection_heads = nn.ModuleList(self.projection_heads)  # type: ignore
-        self.W_out = nn.Linear(dim_v * num_heads, model_dim)
+        self.num_heads = num_heads
+        self.dim_k = self.dim_v = model_dim // num_heads
 
-    def forward(
-        self,
-        query: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
-        key: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
-        value: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
-        attention_mask: Optional[Float[Tensor, "batch seq_len seq_len"]] = None,
-        is_causal: bool = False,
-    ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
-        outputs = list()
-        for head in self.projection_heads:
-            outputs.append(
-                head(
-                    query,
-                    key,
-                    value,
-                    attention_mask=attention_mask,
-                    is_causal=is_causal,
-                )
-            )
+        # Instead of a separate projection for each head, do one big projection for Q, K, V
+        self.W_q = nn.Linear(model_dim, model_dim, bias=False)
+        self.W_k = nn.Linear(model_dim, model_dim, bias=False)
+        self.W_v = nn.Linear(model_dim, model_dim, bias=False)
 
-        outputs = torch.concat(outputs, dim=-1)
-        outputs = self.W_out(outputs)
-        return outputs
+        self.scaled_dot = ScaledDotProductAttention(dim_k=self.dim_k)
+        self.W_out = nn.Linear(model_dim, model_dim)  # final linear after concat
+
+    def forward(self, 
+        query: torch.Tensor,  # [batch, q_len, model_dim]
+        key: torch.Tensor,    # [batch, k_len, model_dim]
+        value: torch.Tensor,  # [batch, k_len, model_dim]
+        attention_mask: torch.Tensor = None,  # [batch, q_len, k_len] => [batch, q_len, q_len] since it's self attention
+        is_causal: bool = False
+    ):
+        B, q_len, _ = query.size()
+        B, k_len, _ = key.size()
+
+        # 1) Project Q, K, V
+        q = self.W_q(query)  # [B, q_len, model_dim]
+        k = self.W_k(key)    # [B, k_len, model_dim]
+        v = self.W_v(value)  # [B, k_len, model_dim]
+
+        # 2) Reshape for multi‐head: [B, q_len, num_heads, dim_k]
+        #    then transpose to [B, num_heads, q_len, dim_k]
+        q = q.view(B, q_len, self.num_heads, self.dim_k).transpose(1, 2)
+        k = k.view(B, k_len, self.num_heads, self.dim_k).transpose(1, 2)
+        v = v.view(B, k_len, self.num_heads, self.dim_v).transpose(1, 2)
+
+        # If mask is [B, q_len, k_len], we might need to broadcast to [B, num_heads, q_len, k_len]
+        attention_mask = attention_mask.unsqueeze(1)  # [B, 1, q_len, k_len]
+
+        # 3) Scaled dot‐product attention per head
+        #    q,k,v => [B, heads, q_len, dim_k]
+        out = self.scaled_dot(q, k, v, attention_mask, is_causal=is_causal)  
+        # out => [B, heads, q_len, dim_k]
+
+        # 4) Transpose/reshape back to [B, q_len, heads * dim_k]
+        out = out.transpose(1, 2).contiguous()  # => [B, q_len, heads, dim_k]
+        out = out.view(B, q_len, self.num_heads * self.dim_k)
+
+        # 5) Final linear
+        out = self.W_out(out)  # => [B, q_len, model_dim]
+        return out
 
 
 class EncoderBlock(nn.Module):
@@ -358,7 +350,9 @@ class Decoder(nn.Module):
 class Embedding(nn.Module):
     def __init__(self, model_dim: int, vocab_size: int):
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, model_dim)
+        self.embedding = nn.Embedding(
+            num_embeddings=vocab_size, embedding_dim=model_dim
+        )
         self.scale = math.sqrt(model_dim)
 
     def forward(self, tokens: Float[Tensor, "batch seq_len"]) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
@@ -443,57 +437,23 @@ class Transformer(nn.Module):
         self,
         encoder_input: Float[Tensor, "batch enc_seq_len"],  # type: ignore
         decoder_input: Float[Tensor, "batch dec_seq_len"],  # type: ignore
+        encoder_self_attention_mask: Float[Tensor, "batch enc_seq_len enc_seq_len"],  # type: ignore
+        decoder_self_attention_mask: Float[Tensor, "batch dec_seq_len dec_seq_len"],  # type: ignore
+        decoder_cross_attention_mask: Float[Tensor, "batch dec_seq_len enc_seq_len"],  # type: ignore
         pad_id: int = 1,
     ) -> Float[Tensor, "batch dec_seq_len vocab_tgt_size"]:  # type: ignore
-        ############# ENCODER #############
-
-        # calculate the attention mask for the encoder and decoder
-        encoder_attention_mask = encoder_input != pad_id
-
-        # calculate the attention mask for the encoder (self attention)
-        batch_size, enc_seq_len = encoder_attention_mask.size()
-        encoder_self_attention_mask = encoder_attention_mask.unsqueeze(1).expand(
-            batch_size, enc_seq_len, enc_seq_len
-        )  # [batch, enc_seq_len, enc_seq_len]
-
         # Embed the source input and add positional encoding
         encoder_input = self.source_embedding(encoder_input)
-        encoder_input = self.positional_encoding(
-            encoder_input
-        )  # [batch, enc_seq_len, model_dim]
+        encoder_input = self.positional_encoding(encoder_input)
 
         # Encode the source input
         encoder_output = self.encoder(
             encoder_input, attention_mask=encoder_self_attention_mask
-        )  # [batch, enc_seq_len, model_dim]
-
-        ############# DECODER #############
-
-        # calculate the attention mask for the decoder (self attention)
-        decoder_attention_mask = decoder_input != pad_id
-
-        # calculate the attention mask for the decoder (self attention)
-        batch_size, dec_seq_len = decoder_attention_mask.size()
-        decoder_self_attention_mask = decoder_attention_mask.unsqueeze(1).expand(
-            batch_size, dec_seq_len, dec_seq_len
-        )  # [batch, dec_seq_len, dec_seq_len]
-
-        # calculate the attention mask for the decoder (cross attention)
-        decoder_attention_mask = decoder_attention_mask.unsqueeze(
-            2
-        )  # [batch, dec_len, 1]
-        encoder_attention_mask = encoder_attention_mask.unsqueeze(
-            1
-        )  # [batch, 1, enc_len]
-        decoder_cross_attention_mask = (
-            decoder_attention_mask & encoder_attention_mask
-        )  # shape [batch, dec_len, enc_len]
+        )
 
         # Embed the target input and add positional encoding
         decoder_input = self.target_embedding(decoder_input)
-        decoder_input = self.positional_encoding(
-            decoder_input
-        )  # [batch, dec_seq_len, model_dim]
+        decoder_input = self.positional_encoding(decoder_input)
 
         # Decode the target input
         decoder_output = self.decoder(
@@ -501,7 +461,7 @@ class Transformer(nn.Module):
             encoder_output,
             self_attention_mask=decoder_self_attention_mask,
             cross_attention_mask=decoder_cross_attention_mask,
-        )  # [batch, dec_seq_len, model_dim]
+        )
 
         # Get the logits for the next token
         logits = self.lm_head(decoder_output)  # [batch, dec_seq_len, vocab_size]
@@ -509,42 +469,63 @@ class Transformer(nn.Module):
 
 
 if __name__ == "__main__":
+    from llm.wmt_data_utils import _collate_fn, get_wmt_tokenizers
+
+    tokenizers = get_wmt_tokenizers("en-de")
+    tokenizers["en"].enable_padding(pad_id=1, pad_token="<pad>")
+    tokenizers["de"].enable_padding(pad_id=1, pad_token="<pad>")
+
+    batch = [
+        {
+            "translation": {
+                "en": "Hello, how are you?",
+                "de": "Hallo, wie geht es dir?",
+            }
+        },
+        {
+            "translation": {
+                "en": "I am fine, thank you!",
+                "de": "Ich bin gut, danke!",
+            }
+        },
+    ]
+
+    inputs = _collate_fn(batch, "en", "de", tokenizers)
+    print(f"{inputs=}")
+
+    encoder_input_ids = inputs["source_input"]["input_ids"]
+    decoder_input_ids = inputs["target_input"]["input_ids"]
+    encoder_self_attention_mask = inputs["source_input"]["self_attention_mask"]
+    decoder_self_attention_mask = inputs["target_input"]["self_attention_mask"]
+    decoder_cross_attention_mask = inputs["target_input"]["cross_attention_mask"]
+
+    print(f"{encoder_input_ids.shape=}")
+    print(f"{decoder_input_ids.shape=}")
+    print(f"{encoder_self_attention_mask.shape=}")
+    print(f"{decoder_self_attention_mask.shape=}")
+    print(f"{decoder_cross_attention_mask.shape=}")
+
     config = TransformerConfig(
         model_dim=32,
         expansion_dim=64,
         num_heads=4,
         num_blocks=2,
         dropout_rate=0.1,
-        vocab_src_size=1500,
-        vocab_tgt_size=1500,
+        vocab_src_size=15000,
+        vocab_tgt_size=15000,
         max_seq_len=100,
     )
     model = Transformer(config=config)
     print(model)
 
-    batch_size = 2
-    encoder_padded_seq_len = 30
-    decoder_padded_seq_len = 40
-    encoder_input = torch.randint(0, config.vocab_src_size, (batch_size, 20))
-    encoder_input = torch.cat(
-        [
-            encoder_input,
-            torch.ones((batch_size, encoder_padded_seq_len - 20), dtype=torch.int64),
-        ],
-        dim=-1,
+    out = model(
+        encoder_input=encoder_input_ids,
+        decoder_input=decoder_input_ids,
+        encoder_self_attention_mask=encoder_self_attention_mask,
+        decoder_self_attention_mask=decoder_self_attention_mask,
+        decoder_cross_attention_mask=decoder_cross_attention_mask,
     )
-    decoder_input = torch.randint(0, config.vocab_tgt_size, (batch_size, 30))
-    decoder_input = torch.cat(
-        [
-            decoder_input,
-            torch.ones((batch_size, decoder_padded_seq_len - 30), dtype=torch.int64),
-        ],
-        dim=-1,
-    )
-    print(f"{encoder_input.shape=}")
-    print(f"{decoder_input.shape=}")
 
-    out = model(encoder_input, decoder_input)
     print(f"{out.shape=}")
     print(f"{out=}")
     print(f"{torch.softmax(out, dim=-1)=}")

@@ -66,7 +66,9 @@ def get_wmt_tokenizers(dataset_name, path="data"):
     try:
         tokenizers = {}
         for lang in dataset_name.split("-"):
-            tokenizers[lang] = Tokenizer.from_file(f"{path}/{lang}_tokenizer.json")
+            tokenizer_path = f"{path}/{lang}_tokenizer.json"
+            print(f"Loading tokenizer from {tokenizer_path}...")
+            tokenizers[lang] = Tokenizer.from_file(tokenizer_path)
         return tokenizers
     except FileNotFoundError:
         raise FileNotFoundError(
@@ -95,7 +97,7 @@ def decode_wmt_tokens(
         return tokenizer.decode(tokens)
 
 
-def _collate_fn(batch, source, target, tokenizers):
+def _collate_fn(batch, source, target, tokenizers, pad_id=1):
     """
     Collate function for the dataloader. This will collate the batches into a single tensor.
 
@@ -104,6 +106,7 @@ def _collate_fn(batch, source, target, tokenizers):
         source (str): The source language.
         target (str): The target language.
         tokenizers (dict): The tokenizers for the specified dataset name.
+        pad_id (int): The padding id.
 
     Returns:
         tuple: The collated batches.
@@ -116,11 +119,6 @@ def _collate_fn(batch, source, target, tokenizers):
         for sample in batch
     ]
     source_batch, target_batch = list(zip(*zipped_list))
-
-    # enable padding for the tokenizers
-    # we do the longest sequence length for padding
-    tokenizers[source].enable_padding(pad_id=1, pad_token="<pad>")
-    tokenizers[target].enable_padding(pad_id=1, pad_token="<pad>")
 
     # tokenize the batches
     tokenized_source_batch = [
@@ -139,10 +137,41 @@ def _collate_fn(batch, source, target, tokenizers):
     tokenized_source_batch = torch.tensor(tokenized_source_batch)
     tokenized_target_batch = torch.tensor(tokenized_target_batch)
 
-    return (
-        tokenized_source_batch,
-        tokenized_target_batch,
+    # Encoder attention mask
+    encoder_attention_mask = (tokenized_source_batch != pad_id).bool()
+    # [batch, enc_seq_len] -> [batch, enc_seq_len, enc_seq_len]
+    B, enc_seq_len = encoder_attention_mask.size()
+    encoder_self_attention_mask = encoder_attention_mask.unsqueeze(1).expand(
+        B, enc_seq_len, enc_seq_len
     )
+
+    # Decoder attention mask
+    decoder_attention_mask = (tokenized_target_batch != pad_id).bool()
+    # [batch, dec_seq_len] -> [batch, dec_seq_len, dec_seq_len]
+    _, dec_seq_len = decoder_attention_mask.size()
+    decoder_self_attention_mask = decoder_attention_mask.unsqueeze(1).expand(
+        B, dec_seq_len, dec_seq_len
+    )
+
+    # Decoder cross attention mask
+    decoder_attention_mask = decoder_attention_mask.unsqueeze(2)  # [batch, dec_len, 1]
+    encoder_attention_mask = encoder_attention_mask.unsqueeze(1)  # [batch, 1, enc_len]
+    decoder_cross_attention_mask = (
+        decoder_attention_mask & encoder_attention_mask
+    )
+
+
+    return {
+        "source_input": {
+            "input_ids": tokenized_source_batch,
+            "self_attention_mask": encoder_self_attention_mask,
+        },
+        "target_input": {
+            "input_ids": tokenized_target_batch,
+            "self_attention_mask": decoder_self_attention_mask,
+            "cross_attention_mask": decoder_cross_attention_mask,
+        },
+    }
 
 
 def get_wmt_dataloader(
@@ -151,6 +180,8 @@ def get_wmt_dataloader(
     source_lang,
     target_lang,
     tokenizer_path="data",
+    pad_id=1,
+    pad_token="<pad>",
 ):
     """
     Get the dataloader for the specified dataset name.
@@ -166,6 +197,12 @@ def get_wmt_dataloader(
         DataLoader: The dataloader for the specified dataset name.
     """
     tokenizers = get_wmt_tokenizers(f"{source_lang}-{target_lang}", tokenizer_path)
+
+    # enable padding for the tokenizers
+    # we do the longest sequence length for padding
+    tokenizers[source_lang].enable_padding(pad_id=pad_id, pad_token=pad_token)
+    tokenizers[target_lang].enable_padding(pad_id=pad_id, pad_token=pad_token)
+
     return DataLoader(
         dataset=dataset,
         batch_size=batch_size,
