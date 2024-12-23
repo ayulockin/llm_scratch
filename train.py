@@ -1,4 +1,5 @@
 import torch
+torch.autograd.set_detect_anomaly(True)
 import torch.nn as nn
 
 from llm.wmt_data_utils import get_wmt_dataset, get_wmt_dataloaders, get_wmt_tokenizers
@@ -8,7 +9,9 @@ from llm.wmt_model import TransformerConfig, Transformer
 class TrainerConfig:
     source_lang = "de"
     target_lang = "en"
-    batch_size = 32
+    pad_id = 1
+    pad_token = "<pad>"
+    batch_size = 2
     num_epochs = 10
     learning_rate = 1e-4
     max_len = 256
@@ -24,52 +27,34 @@ class TrainerConfig:
     dropout_rate = 0.1
 
 
-def train_step(batch: tuple[torch.Tensor, torch.Tensor], model: nn.Module, optimizer: torch.optim.Optimizer, loss_fn: nn.Module):
+def train_step(batch: dict, model: nn.Module, optimizer: torch.optim.Optimizer, loss_fn: nn.Module):
     model.train()
     # move the data to the device
-    src_tokens, tgt_tokens, encoder_attention_mask, decoder_attention_mask = batch
-    print(f"{src_tokens.shape=}")
-    print(f"{tgt_tokens.shape=}")
-    print(f"{encoder_attention_mask.shape=}")
-    print(f"{decoder_attention_mask.shape=}")
+    encoder_input_ids = batch["source_input"]["input_ids"].to(trainer_config.device)
+    decoder_input_ids = batch["target_input"]["input_ids"].to(trainer_config.device)
+    encoder_self_attention_mask = batch["source_input"]["self_attention_mask"].to(trainer_config.device)
+    decoder_self_attention_mask = batch["target_input"]["self_attention_mask"].to(trainer_config.device)
+    decoder_cross_attention_mask = batch["target_input"]["cross_attention_mask"].to(trainer_config.device)
 
-    src_tokens = src_tokens.to(trainer_config.device)
-    tgt_tokens = tgt_tokens.to(trainer_config.device)
-    encoder_attention_mask = encoder_attention_mask.to(trainer_config.device)
-    decoder_attention_mask = decoder_attention_mask.to(trainer_config.device)
-    
     # forward pass and loss calculation
     optimizer.zero_grad()
-    output = model(src_tokens, tgt_tokens)
+    logits = model(
+        encoder_input=encoder_input_ids,
+        decoder_input=decoder_input_ids,
+        encoder_self_attention_mask=encoder_self_attention_mask,
+        decoder_self_attention_mask=decoder_self_attention_mask,
+        decoder_cross_attention_mask=decoder_cross_attention_mask,
+    )
 
-    # softmax to get the logits
-    logits = torch.softmax(output, dim=-1)
-    pred_tokens = torch.argmax(logits, dim=-1)
-    loss = loss_fn(pred_tokens, tgt_tokens)
+    batch_size, _, vocab_size = logits.shape  # batch, decoder_seq_len, vocab_size
+    logits_flat = logits.view(-1, vocab_size)  # [1 * decoder_seq_len, vocab_size]
+    targets_flat = decoder_input_ids.view(-1)  # [1 * decoder_seq_len]
+
+    loss = loss_fn(logits_flat, targets_flat)
     loss.backward()
     optimizer.step()
 
     return model, {"loss": loss}
-
-
-def eval_step(batch: tuple[torch.Tensor, torch.Tensor], model: nn.Module, loss_fn: nn.Module):
-    model.eval()
-
-    # move the data to the device
-    src_tokens, tgt_tokens, encoder_attention_mask, decoder_attention_mask = batch
-    src_tokens = src_tokens.to(trainer_config.device)
-    tgt_tokens = tgt_tokens.to(trainer_config.device)
-    encoder_attention_mask = encoder_attention_mask.to(trainer_config.device)
-    decoder_attention_mask = decoder_attention_mask.to(trainer_config.device)
-    
-    # forward pass and loss calculation
-    output = model(src_tokens, tgt_tokens, encoder_attention_mask, decoder_attention_mask)
-
-    # softmax to get the logits
-    logits = torch.softmax(output, dim=-1)
-    loss = loss_fn(logits, tgt_tokens)
-
-    return model, {"eval_loss": loss}
 
 
 if __name__ == "__main__":
@@ -119,28 +104,22 @@ if __name__ == "__main__":
     )
 
     # loss function (guessing this is right)
-    loss_fn = nn.CrossEntropyLoss(label_smoothing=trainer_config.label_smoothing)
+    loss_fn = nn.CrossEntropyLoss(
+        label_smoothing=trainer_config.label_smoothing,
+        ignore_index=trainer_config.pad_id,
+    )
 
     # Train the model
     for epoch in range(trainer_config.num_epochs):
+        print(f"Epoch {epoch+1} - Training...")
         train_loss = 0
-        eval_loss = 0
         for idx, batch in enumerate(dataloaders["train"]):
             model, results = train_step(batch, model, optimizer, loss_fn)
-            train_loss += results["loss"] / len(batch)
+            train_loss += results["loss"]
             if idx % 10 == 0:
-                print(f"Epoch {epoch+1} - Train Loss: {train_loss}")
+                print(f"Epoch {epoch+1} - Train Loss: {train_loss/10}")
 
             if idx == 20:
                 break
 
-        for idx, batch in enumerate(dataloaders["eval"]):
-            model, results = eval_step(batch, model, loss_fn)
-            eval_loss += results["eval_loss"] / len(batch)
-            if idx % 10 == 0:
-                print(f"Epoch {epoch+1} - Eval Loss: {eval_loss}")
-
-            if idx == 20:
-                break
-
-        print(f"Epoch {epoch+1} - Train Loss: {train_loss}, Eval Loss: {eval_loss}")
+        print(f"Epoch {epoch+1} - Train Loss: {train_loss}")

@@ -64,10 +64,12 @@ class ScaledDotProductAttention(nn.Module):
 
     def forward(self, 
         q: torch.Tensor, 
-        k: torch.Tensor, 
+        k: torch.Tensor,
         v: torch.Tensor, 
         attn_mask: torch.Tensor = None,
-        is_causal: bool = False):
+        is_causal: bool = False,
+        attn_bias: torch.Tensor = None,
+    ):
         """
         q, k, v: [batch, heads, seq_len, dim_k]
         attn_mask: [batch, 1, q_len, k_len] or [batch, heads, q_len, k_len] (various shapes are possible)
@@ -81,19 +83,12 @@ class ScaledDotProductAttention(nn.Module):
             causal_mask = torch.triu(
                 torch.ones_like(scores, dtype=torch.bool), diagonal=1
             )
-            scores = scores.masked_fill(causal_mask, float('-inf'))
+            attn_bias.masked_fill_(causal_mask, float('-inf'))
 
         if attn_mask is not None:
-            # You might need to ensure broadcast shape: e.g. [batch, heads, q_len, k_len]
-            # Typically 'True' in the mask means "disallowed / pad" => fill with -inf
-            scores = scores.masked_fill(attn_mask, float('-inf'))
+            attn_bias.masked_fill_(~attn_mask, float('-1e9'))
 
-        attn = torch.softmax(scores, dim=-1)
-
-        # Detect NaN (fully -inf row). If you want to clamp:
-        mask_invalid = torch.isnan(attn)
-        if mask_invalid.any():
-            attn = attn.masked_fill(mask_invalid, 0.0)
+        attn = torch.softmax(scores + attn_bias, dim=-1)
 
         # Multiply by values: (B, heads, q_len, k_len) x (B, heads, k_len, dim_k) -> (B, heads, q_len, dim_k)
         out = torch.matmul(attn, v)
@@ -127,6 +122,8 @@ class MultiHeadAttention(nn.Module):
         B, q_len, _ = query.size()
         B, k_len, _ = key.size()
 
+        attn_bias = torch.zeros(B, self.num_heads, q_len, k_len, dtype=torch.float32)
+    
         # 1) Project Q, K, V
         q = self.W_q(query)  # [B, q_len, model_dim]
         k = self.W_k(key)    # [B, k_len, model_dim]
@@ -143,7 +140,7 @@ class MultiHeadAttention(nn.Module):
 
         # 3) Scaled dot‐product attention per head
         #    q,k,v => [B, heads, q_len, dim_k]
-        out = self.scaled_dot(q, k, v, attention_mask, is_causal=is_causal)  
+        out = self.scaled_dot(q, k, v, attention_mask, is_causal=is_causal, attn_bias=attn_bias)  
         # out => [B, heads, q_len, dim_k]
 
         # 4) Transpose/reshape back to [B, q_len, heads * dim_k]
@@ -398,6 +395,7 @@ class LMHead(nn.Module):
         return x
 
 
+# TODO: add subclassing for Mixin for transformer integration
 class Transformer(nn.Module):
     def __init__(
         self,
@@ -533,3 +531,14 @@ if __name__ == "__main__":
 
     print(f"{torch.argmax(torch.softmax(out, dim=-1), dim=-1)=}")
     print(f"{torch.argmax(torch.softmax(out, dim=-1), dim=-1).shape=}")
+
+    loss_fn = nn.CrossEntropyLoss(
+        ignore_index=1,
+        reduction="none",
+    )
+
+    out = out.view(-1, out.shape[-1])
+    targets = decoder_input_ids.view(-1)
+
+    loss = loss_fn(out, targets)
+    print(f"{loss=}")
