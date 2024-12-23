@@ -103,6 +103,13 @@ class ScaledDotProductAttention(nn.Module):
             scaled_similarity, dim=-1
         )  # Careful with the `dim`
 
+        # If a row is fully -inf, the softmax is all NaN. We can clamp that row to 0.
+        # This usually happens with short sequences. We can safely ignore these rows by
+        # clamping them to 0.
+        mask_invalid = torch.isnan(attention_scores)
+        if mask_invalid.any():
+            attention_scores[mask_invalid] = 0.0
+
         # project the value
         value = self.W_value(value)
         outputs = torch.matmul(attention_scores, value)
@@ -507,12 +514,12 @@ if __name__ == "__main__":
     print(model)
 
     batch_size = 2
-    encoder_padded_seq_len = 3
-    decoder_padded_seq_len = 4
-    encoder_input = torch.randint(0, config.vocab_src_size, (batch_size, 2))
-    encoder_input = torch.cat([encoder_input, torch.ones((batch_size, encoder_padded_seq_len - 2), dtype=torch.int64)], dim=-1)
-    decoder_input = torch.randint(0, config.vocab_tgt_size, (batch_size, 3))
-    decoder_input = torch.cat([decoder_input, torch.ones((batch_size, decoder_padded_seq_len - 3), dtype=torch.int64)], dim=-1)
+    encoder_padded_seq_len = 30
+    decoder_padded_seq_len = 40
+    encoder_input = torch.randint(0, config.vocab_src_size, (batch_size, 20))
+    encoder_input = torch.cat([encoder_input, torch.ones((batch_size, encoder_padded_seq_len - 20), dtype=torch.int64)], dim=-1)
+    decoder_input = torch.randint(0, config.vocab_tgt_size, (batch_size, 30))
+    decoder_input = torch.cat([decoder_input, torch.ones((batch_size, decoder_padded_seq_len - 30), dtype=torch.int64)], dim=-1)
     print(f"{encoder_input.shape=}")
     print(f"{decoder_input.shape=}")
 
