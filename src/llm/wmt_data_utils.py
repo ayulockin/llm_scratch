@@ -139,15 +139,9 @@ def _collate_fn(batch, source, target, tokenizers):
     tokenized_source_batch = torch.tensor(tokenized_source_batch)
     tokenized_target_batch = torch.tensor(tokenized_target_batch)
 
-    # create attention masks
-    encoder_attention_mask = tokenized_source_batch != 1
-    decoder_attention_mask = tokenized_target_batch != 1
-
     return (
         tokenized_source_batch,
         tokenized_target_batch,
-        encoder_attention_mask,
-        decoder_attention_mask,
     )
 
 
