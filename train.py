@@ -40,7 +40,7 @@ def train_step(batch: tuple[torch.Tensor, torch.Tensor], model: nn.Module, optim
     
     # forward pass and loss calculation
     optimizer.zero_grad()
-    output = model(src_tokens, tgt_tokens, encoder_attention_mask, decoder_attention_mask)
+    output = model(src_tokens, tgt_tokens)
 
     # softmax to get the logits
     logits = torch.softmax(output, dim=-1)

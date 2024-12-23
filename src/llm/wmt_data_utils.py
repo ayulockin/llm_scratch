@@ -1,20 +1,12 @@
-from torch.utils.data import DataLoader
-from datasets import load_dataset
 from functools import partial
-import torch
-
 from typing import Union
 
-from tokenizers import (
-    Tokenizer,
-    models,
-    normalizers,
-    pre_tokenizers,
-    decoders,
-    trainers,
-)
+import torch
 from datasets import load_dataset
 from fire import Fire
+from tokenizers import (Tokenizer, decoders, models, normalizers,
+                        pre_tokenizers, trainers)
+from torch.utils.data import DataLoader
 
 
 def get_wmt_dataset(name: str):
@@ -151,7 +143,12 @@ def _collate_fn(batch, source, target, tokenizers):
     encoder_attention_mask = tokenized_source_batch != 1
     decoder_attention_mask = tokenized_target_batch != 1
 
-    return tokenized_source_batch, tokenized_target_batch, encoder_attention_mask, decoder_attention_mask
+    return (
+        tokenized_source_batch,
+        tokenized_target_batch,
+        encoder_attention_mask,
+        decoder_attention_mask,
+    )
 
 
 def get_wmt_dataloader(
