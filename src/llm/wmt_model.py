@@ -51,6 +51,7 @@ class FeedForward(nn.Module):
         inputs: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
     ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
         x = self.layer1(inputs)
+        # TODO: might add dropout here
         x = self.activation(x)
         x = self.layer2(x)
         return x
@@ -74,7 +75,7 @@ class ScaledDotProductAttention(nn.Module):
         query: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
         key: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
         value: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
-        attention_mask: Optional[Float[Tensor, "batch seq_len"]] = None,
+        attention_mask: Optional[Float[Tensor, "batch seq_len seq_len"]] = None,
         is_causal: bool = False,
     ) -> Float[Tensor, "batch seq_len dim_v"]:  # type: ignore
         # project key and query
@@ -91,11 +92,6 @@ class ScaledDotProductAttention(nn.Module):
             )
 
         if attention_mask is not None:
-            # attention mask should be a square matrix of shape [batch, seq_len, seq_len]
-            # TODO: .size is bad for optimization so handle this better
-            attention_mask = attention_mask.unsqueeze(1).expand(
-                attention_mask.size(0), attention_mask.size(1), attention_mask.size(1)
-            )
             scaled_similarity = scaled_similarity.masked_fill(
                 # reversing the mask because we want to mask out the padding tokens (True in attention mask
                 # means padding token)
@@ -140,7 +136,7 @@ class MultiHeadAttention(nn.Module):
         query: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
         key: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
         value: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
-        attention_mask: Optional[Float[Tensor, "batch seq_len"]] = None,
+        attention_mask: Optional[Float[Tensor, "batch seq_len seq_len"]] = None,
         is_causal: bool = False,
     ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
         outputs = list()
@@ -177,25 +173,25 @@ class EncoderBlock(nn.Module):
         )
         self.layer_norm1 = nn.LayerNorm(normalized_shape=model_dim)
         self.layer_norm2 = nn.LayerNorm(normalized_shape=model_dim)
-        self.residual_dropout = ResidualDropout(dropout_rate=dropout_rate)
-
+        self.residual_dropout_1 = ResidualDropout(dropout_rate=dropout_rate)
+        self.residual_dropout_2 = ResidualDropout(dropout_rate=dropout_rate)
     def forward(
         self,
         inputs: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
-        attention_mask: Optional[Float[Tensor, "batch enc_seq_len"]] = None,
+        attention_mask: Optional[Float[Tensor, "batch enc_seq_len enc_seq_len"]] = None,
     ) -> Float[Tensor, "batch enc_seq_len model_dim"]:  # type: ignore
         residual = inputs
 
         x = self.multi_head_attention(
             query=inputs, key=inputs, value=inputs, attention_mask=attention_mask
         )
-        x = self.residual_dropout(x, residual)
+        x = self.residual_dropout_1(x, residual)
         x = self.layer_norm1(x)
 
         residual = x
 
         x = self.feed_forward(x)
-        x = self.residual_dropout(x, residual)
+        x = self.residual_dropout_2(x, residual)
         x = self.layer_norm2(x)
         return x
 
@@ -226,15 +222,17 @@ class Encoder(nn.Module):
     def forward(
         self,
         encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
-        attention_mask: Optional[Float[Tensor, "batch enc_seq_len"]] = None,
+        attention_mask: Optional[Float[Tensor, "batch enc_seq_len enc_seq_len"]] = None,
     ) -> Float[Tensor, "batch enc_seq_len model_dim"]:  # type: ignore
         # We pass the input through each encoder layer and return the final output
+        x = encoder_input
         for encoder_layer in self.encoder_layers:
-            encoder_input = encoder_layer(
-                encoder_input, attention_mask=attention_mask
+            x = encoder_layer(
+                inputs=x,
+                attention_mask=attention_mask,
             )
 
-        return encoder_input
+        return x
 
 
 class DecoderBlock(nn.Module):
@@ -258,12 +256,16 @@ class DecoderBlock(nn.Module):
         self.layer_norm1 = nn.LayerNorm(normalized_shape=model_dim)
         self.layer_norm2 = nn.LayerNorm(normalized_shape=model_dim)
         self.layer_norm3 = nn.LayerNorm(normalized_shape=model_dim)
-        self.residual_dropout = ResidualDropout(dropout_rate=dropout_rate)
+        self.residual_dropout_1 = ResidualDropout(dropout_rate=dropout_rate)
+        self.residual_dropout_2 = ResidualDropout(dropout_rate=dropout_rate)
+        self.residual_dropout_3 = ResidualDropout(dropout_rate=dropout_rate)
+
     def forward(
         self,
         decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
         encoder_output: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
-        attention_mask: Optional[Float[Tensor, "batch dec_seq_len"]] = None,
+        self_attention_mask: Optional[Float[Tensor, "batch dec_seq_len dec_seq_len"]] = None,
+        cross_attention_mask: Optional[Float[Tensor, "batch dec_seq_len enc_seq_len"]] = None,
     ) -> Float[Tensor, "batch dec_seq_len model_dim"]:  # type: ignore
         residual = decoder_input
 
@@ -271,10 +273,10 @@ class DecoderBlock(nn.Module):
             query=decoder_input,
             key=decoder_input,
             value=decoder_input,
-            attention_mask=attention_mask,
+            attention_mask=self_attention_mask,
             is_causal=True,
         )
-        x = self.residual_dropout(x, residual)
+        x = self.residual_dropout_1(x, residual)
         x = self.layer_norm1(x)
 
         residual = x
@@ -283,15 +285,15 @@ class DecoderBlock(nn.Module):
             query=x,
             key=encoder_output,
             value=encoder_output,
-            attention_mask=attention_mask,
+            attention_mask=cross_attention_mask,
         )
-        x = self.residual_dropout(x, residual)
+        x = self.residual_dropout_2(x, residual)
         x = self.layer_norm2(x)
 
         residual = x
 
         x = self.feed_forward(x)
-        x = self.residual_dropout(x, residual)
+        x = self.residual_dropout_3(x, residual)
         x = self.layer_norm3(x)
         return x
 
@@ -323,14 +325,16 @@ class Decoder(nn.Module):
         self,
         decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],  # type: ignore
         encoder_output: Float[Tensor, "batch enc_seq_len model_dim"],  # type: ignore
-        attention_mask: Optional[Float[Tensor, "batch dec_seq_len"]] = None,
+        self_attention_mask: Optional[Float[Tensor, "batch dec_seq_len dec_seq_len"]] = None,
+        cross_attention_mask: Optional[Float[Tensor, "batch dec_seq_len enc_seq_len"]] = None,
     ) -> Float[Tensor, "batch dec_seq_len model_dim"]:  # type: ignore
         x = decoder_input
         for decoder_layer in self.decoder_layers:
             x = decoder_layer(
                 decoder_input=x,
                 encoder_output=encoder_output,
-                attention_mask=attention_mask,
+                self_attention_mask=self_attention_mask,
+                cross_attention_mask=cross_attention_mask,
             )
         return x
 
@@ -368,7 +372,7 @@ class PositionalEncoding(nn.Module):
         self, inputs: Float[Tensor, "batch seq_len model_dim"]  # type: ignore
     ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
         x = inputs + self.position_encoding[: inputs.size(1)]
-        x = self.residual_dropout(x)
+        x = self.residual_dropout(x)  # this is just dropout of x (no residuals)
         return x
 
 
@@ -423,27 +427,64 @@ class Transformer(nn.Module):
         self,
         encoder_input: Float[Tensor, "batch enc_seq_len"],  # type: ignore
         decoder_input: Float[Tensor, "batch dec_seq_len"],  # type: ignore
-        encoder_attention_mask: Optional[Float[Tensor, "batch enc_seq_len"]] = None,
-        decoder_attention_mask: Optional[Float[Tensor, "batch dec_seq_len"]] = None,
+        pad_id: int = 1,
     ) -> Float[Tensor, "batch dec_seq_len vocab_tgt_size"]:  # type: ignore
+        ############# ENCODER #############
+
+        # calculate the attention mask for the encoder and decoder
+        encoder_attention_mask = encoder_input != pad_id
+        print(f"{encoder_attention_mask.shape=}")
+        print(f"{encoder_attention_mask=}")
+        # calculate the attention mask for the encoder (self attention)
+        batch_size, enc_seq_len = encoder_attention_mask.size()
+        encoder_self_attention_mask = encoder_attention_mask.unsqueeze(1).expand(
+            batch_size, enc_seq_len, enc_seq_len
+        )  # [batch, enc_seq_len, enc_seq_len]
+        print(f"{encoder_self_attention_mask.shape=}")
+        print(f"{encoder_self_attention_mask=}")
+
         # Embed the source input and add positional encoding
         encoder_input = self.source_embedding(encoder_input)
         encoder_input = self.positional_encoding(encoder_input)  # [batch, enc_seq_len, model_dim]
+
+        # Encode the source input
+        encoder_output = self.encoder(
+            encoder_input, attention_mask=encoder_self_attention_mask
+        )  # [batch, enc_seq_len, model_dim]
+        print(f"{encoder_output.shape=}")
+        print(f"{encoder_output=}")
+
+        ############# DECODER #############
+
+        # calculate the attention mask for the decoder (self attention)
+        decoder_attention_mask = decoder_input != pad_id
+        print(f"{decoder_attention_mask.shape=}")
+
+        # calculate the attention mask for the decoder (self attention)
+        batch_size, dec_seq_len = decoder_attention_mask.size()
+        decoder_self_attention_mask = decoder_attention_mask.unsqueeze(1).expand(
+            batch_size, dec_seq_len, dec_seq_len
+        )  # [batch, dec_seq_len, dec_seq_len]
+        print(f"{decoder_self_attention_mask.shape=}")
+        print(f"{decoder_self_attention_mask=}")
+
+        # calculate the attention mask for the decoder (cross attention)
+        decoder_attention_mask = decoder_attention_mask.unsqueeze(2)  # [batch, dec_len, 1]
+        encoder_attention_mask = encoder_attention_mask.unsqueeze(1)   # [batch, 1, enc_len]
+        decoder_cross_attention_mask = decoder_attention_mask & encoder_attention_mask  # shape [batch, dec_len, enc_len]
+        print(f"{decoder_cross_attention_mask.shape=}")
+        print(f"{decoder_cross_attention_mask=}")
 
         # Embed the target input and add positional encoding
         decoder_input = self.target_embedding(decoder_input)
         decoder_input = self.positional_encoding(decoder_input)  # [batch, dec_seq_len, model_dim]
 
-        # Encode the source input
-        encoder_output = self.encoder(
-            encoder_input, attention_mask=encoder_attention_mask
-        )  # [batch, enc_seq_len, model_dim]
-
         # Decode the target input
         decoder_output = self.decoder(
             decoder_input,
             encoder_output,
-            attention_mask=decoder_attention_mask,
+            self_attention_mask=decoder_self_attention_mask,
+            cross_attention_mask=decoder_cross_attention_mask,
         )  # [batch, dec_seq_len, model_dim]
 
         # Get the logits for the next token
@@ -453,8 +494,8 @@ class Transformer(nn.Module):
 
 if __name__ == "__main__":
     config = TransformerConfig(
-        model_dim=64,
-        expansion_dim=256,
+        model_dim=32,
+        expansion_dim=64,
         num_heads=4,
         num_blocks=2,
         dropout_rate=0.1,
@@ -466,22 +507,16 @@ if __name__ == "__main__":
     print(model)
 
     batch_size = 2
-    padded_seq_len = 60
-    encoder_input = torch.randint(0, config.vocab_src_size, (batch_size, 55))
-    encoder_input = torch.cat([encoder_input, torch.ones((batch_size, padded_seq_len - 55), dtype=torch.int64)], dim=-1)
-    decoder_input = torch.randint(0, config.vocab_tgt_size, (batch_size, 48))
-    decoder_input = torch.cat([decoder_input, torch.ones((batch_size, padded_seq_len - 48), dtype=torch.int64)], dim=-1)
+    encoder_padded_seq_len = 3
+    decoder_padded_seq_len = 4
+    encoder_input = torch.randint(0, config.vocab_src_size, (batch_size, 2))
+    encoder_input = torch.cat([encoder_input, torch.ones((batch_size, encoder_padded_seq_len - 2), dtype=torch.int64)], dim=-1)
+    decoder_input = torch.randint(0, config.vocab_tgt_size, (batch_size, 3))
+    decoder_input = torch.cat([decoder_input, torch.ones((batch_size, decoder_padded_seq_len - 3), dtype=torch.int64)], dim=-1)
     print(f"{encoder_input.shape=}")
     print(f"{decoder_input.shape=}")
 
-    encoder_attention_mask = encoder_input != 1
-    decoder_attention_mask = decoder_input != 1
-    print(f"{encoder_attention_mask.shape=}")
-    print(f"{decoder_attention_mask.shape=}")
-    print(f"{encoder_attention_mask=}")
-    print(f"{decoder_attention_mask=}")
-
-    out = model(encoder_input, decoder_input, encoder_attention_mask, decoder_attention_mask)
+    out = model(encoder_input, decoder_input)
     print(f"{out.shape=}")
     print(f"{out=}")
     print(f"{torch.softmax(out, dim=-1)=}")
