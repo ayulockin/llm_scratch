@@ -1,3 +1,5 @@
+import wandb
+
 import torch
 torch.autograd.set_detect_anomaly(True)
 import torch.nn as nn
@@ -11,8 +13,8 @@ class TrainerConfig:
     target_lang = "en"
     pad_id = 1
     pad_token = "<pad>"
-    batch_size = 2
-    num_epochs = 10
+    batch_size = 16
+    num_epochs = 2
     learning_rate = 1e-4
     max_len = 256
     label_smoothing = 0.1
@@ -23,7 +25,7 @@ class TrainerConfig:
     model_dim = 512
     expansion_dim = 2048
     num_heads = 8
-    num_blocks = 6
+    num_blocks = 3
     dropout_rate = 0.1
 
 
@@ -54,11 +56,17 @@ def train_step(batch: dict, model: nn.Module, optimizer: torch.optim.Optimizer, 
     loss.backward()
     optimizer.step()
 
-    return model, {"loss": loss}
+    return loss.item()
 
 
 if __name__ == "__main__":
+    run = wandb.init(
+        project="wmt14-de-en",
+        entity="llm-scratch",
+    )
+
     trainer_config = TrainerConfig()
+    wandb.config.update(trainer_config.__dict__)
 
     # Get the dataset
     datasets = get_wmt_dataset(
@@ -89,6 +97,7 @@ if __name__ == "__main__":
         vocab_tgt_size=tokenizers[trainer_config.target_lang].get_vocab_size(),
         max_seq_len=trainer_config.max_len,
     )
+    wandb.config.update(transformer_config.__dict__)
 
     # Build the model
     model = Transformer(config=transformer_config)
@@ -112,14 +121,21 @@ if __name__ == "__main__":
     # Train the model
     for epoch in range(trainer_config.num_epochs):
         print(f"Epoch {epoch+1} - Training...")
-        train_loss = 0
+        total_train_loss = 0.0
+        total_val_loss = 0.0
+
         for idx, batch in enumerate(dataloaders["train"]):
-            model, results = train_step(batch, model, optimizer, loss_fn)
-            train_loss += results["loss"]
-            if idx % 10 == 0:
-                print(f"Epoch {epoch+1} - Train Loss: {train_loss/10}")
+            step_loss = train_step(batch, model, optimizer, loss_fn)
+            total_train_loss += step_loss
 
-            if idx == 20:
-                break
+            wandb.log({"train_loss": step_loss})
 
-        print(f"Epoch {epoch+1} - Train Loss: {train_loss}")
+            # Print every 10 steps (running average)
+            if (idx + 1) % 100 == 0:
+                avg_loss = total_train_loss / (idx + 1)
+                print(f"  Step {idx+1} - Avg Train Loss: {avg_loss:.4f}")
+
+        # Final average for the epoch
+        steps_this_epoch = idx + 1  # because idx is zero-based
+        epoch_avg_loss = total_train_loss / steps_this_epoch
+        print(f"Epoch {epoch+1} - Average Train Loss: {epoch_avg_loss:.4f}")
