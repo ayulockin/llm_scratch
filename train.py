@@ -4,19 +4,21 @@ import torch
 torch.autograd.set_detect_anomaly(True)
 import torch.nn as nn
 
-from llm.wmt_data_utils import get_wmt_dataset, get_wmt_dataloaders, get_wmt_tokenizers
+from llm.wmt_data_utils import get_wmt_dataset, get_wmt_dataloaders
 from llm.wmt_model import TransformerConfig, Transformer
+
+from tokenizers import Tokenizer
 
 
 class TrainerConfig:
     source_lang = "de"
     target_lang = "en"
-    pad_id = 1
-    pad_token = "<pad>"
+    pad_id = 0
+    pad_token = "[PAD]"
     batch_size = 16
     num_epochs = 2
     learning_rate = 1e-4
-    max_len = 256
+    max_seq_len = 512
     label_smoothing = 0.1
     device = "cuda" if torch.cuda.is_available() else "cpu"
     adam_beta_1 = 0.91
@@ -27,6 +29,7 @@ class TrainerConfig:
     num_heads = 8
     num_blocks = 3
     dropout_rate = 0.1
+    tokenizer_id = "llm-scratch/wmt-14-en-de-tok"
 
 
 def train_step(batch: dict, model: nn.Module, optimizer: torch.optim.Optimizer, loss_fn: nn.Module):
@@ -73,17 +76,18 @@ if __name__ == "__main__":
         name=f"{trainer_config.source_lang}-{trainer_config.target_lang}"
     )
 
+    # Additionally get the tokenizer to get the vocab_size
+    tokenizer = Tokenizer.from_pretrained(trainer_config.tokenizer_id)
+    tokenizer.enable_padding(pad_token="[PAD]")
+    tokenizer.enable_truncation(max_length=trainer_config.max_seq_len)
+
     # Get the dataloaders
     dataloaders = get_wmt_dataloaders(
         datasets=datasets,
         batch_size=trainer_config.batch_size,
         source_lang=trainer_config.source_lang,
         target_lang=trainer_config.target_lang,
-    )
-
-    # Additionally get the tokenizer to get the vocab_size
-    tokenizers = get_wmt_tokenizers(
-        dataset_name=f"{trainer_config.source_lang}-{trainer_config.target_lang}"
+        tokenizer=tokenizer,
     )
 
     # Build the transformer config
@@ -93,9 +97,8 @@ if __name__ == "__main__":
         num_heads=trainer_config.num_heads,
         num_blocks=trainer_config.num_blocks,
         dropout_rate=trainer_config.dropout_rate,
-        vocab_src_size=tokenizers[trainer_config.source_lang].get_vocab_size(),
-        vocab_tgt_size=tokenizers[trainer_config.target_lang].get_vocab_size(),
-        max_seq_len=trainer_config.max_len,
+        vocab_size=tokenizer.get_vocab_size(),
+        max_seq_len=trainer_config.max_seq_len,
     )
     wandb.config.update(transformer_config.__dict__)
 
@@ -112,7 +115,7 @@ if __name__ == "__main__":
         eps=trainer_config.adam_eps,
     )
 
-    # loss function (guessing this is right)
+    # loss function
     loss_fn = nn.CrossEntropyLoss(
         label_smoothing=trainer_config.label_smoothing,
         ignore_index=trainer_config.pad_id,

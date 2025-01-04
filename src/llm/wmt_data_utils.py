@@ -178,9 +178,8 @@ def get_wmt_dataloader(
     batch_size,
     source_lang,
     target_lang,
-    tokenizer_path="data",
-    pad_id=1,
-    pad_token="<pad>",
+    tokenizer,
+    pad_id=0,
 ):
     """
     Get the dataloader for the specified dataset name.
@@ -190,33 +189,29 @@ def get_wmt_dataloader(
         batch_size (int): The batch size.
         source_lang (str): The source language.
         target_lang (str): The target language.
-        tokenizer_path (str): The path to the tokenizers.
 
     Returns:
         DataLoader: The dataloader for the specified dataset name.
     """
-    tokenizers = get_wmt_tokenizers(f"{source_lang}-{target_lang}", tokenizer_path)
-
-    # enable padding for the tokenizers
-    # we do the longest sequence length for padding
-    tokenizers[source_lang].enable_padding(pad_id=pad_id, pad_token=pad_token)
-    tokenizers[target_lang].enable_padding(pad_id=pad_id, pad_token=pad_token)
-
     return DataLoader(
         dataset=dataset,
         batch_size=batch_size,
         collate_fn=partial(
-            _collate_fn, source=source_lang, target=target_lang, tokenizers=tokenizers
+            _collate_fn,
+            source=source_lang,
+            target=target_lang,
+            tokenizer=tokenizer,
+            pad_id=pad_id,
         ),
     )
 
 
 def get_wmt_dataloaders(
     datasets: dict,
+    tokenizer: Tokenizer,
     batch_size: int = 32,
     source_lang: str = "en",
     target_lang: str = "de",
-    tokenizer_path: str = "data",
 ):
     dataloaders = {}
     for dataset_name, dataset in datasets.items():
@@ -225,7 +220,7 @@ def get_wmt_dataloaders(
             batch_size=batch_size,
             source_lang=source_lang,
             target_lang=target_lang,
-            tokenizer_path=tokenizer_path,
+            tokenizer=tokenizer,
         )
     return dataloaders
 
