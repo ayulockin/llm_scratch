@@ -1,8 +1,10 @@
 import wandb
+from tqdm import tqdm
 
 import torch
 torch.autograd.set_detect_anomaly(True)
 import torch.nn as nn
+from torch.optim.lr_scheduler import LambdaLR
 
 from llm.wmt_data_utils import get_wmt_dataset, get_wmt_dataloaders
 from llm.wmt_model import TransformerConfig, Transformer
@@ -25,14 +27,21 @@ class TrainerConfig:
     adam_beta_2 = 0.98
     adam_eps = 1e-09
     model_dim = 512
+    warmup_steps = 4000
     expansion_dim = 2048
     num_heads = 8
-    num_blocks = 3
+    num_blocks = 6
     dropout_rate = 0.1
     tokenizer_id = "llm-scratch/wmt-14-en-de-tok"
 
 
-def train_step(batch: dict, model: nn.Module, optimizer: torch.optim.Optimizer, loss_fn: nn.Module):
+def train_step(
+    batch: dict,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    loss_fn: nn.Module,
+    trainer_config: TrainerConfig,
+) -> float:
     model.train()
     # move the data to the device
     encoder_input_ids = batch["source_input"]["input_ids"].to(trainer_config.device)
@@ -62,6 +71,69 @@ def train_step(batch: dict, model: nn.Module, optimizer: torch.optim.Optimizer, 
     return loss.item()
 
 
+def valid_step(
+    batch: dict,
+    model: nn.Module,
+    loss_fn: nn.Module,
+    trainer_config: TrainerConfig,
+) -> float:
+    """
+    Similar to train_step, but no gradient updates. Used for validation.
+    Returns the loss for this batch (as a float).
+    """
+    model.eval()
+    
+    with torch.no_grad():
+        # Move data to device
+        encoder_input_ids = batch["source_input"]["input_ids"].to(trainer_config.device)
+        decoder_input_ids = batch["target_input"]["input_ids"].to(trainer_config.device)
+        encoder_self_attention_mask = batch["source_input"]["self_attention_mask"].to(trainer_config.device)
+        decoder_self_attention_mask = batch["target_input"]["self_attention_mask"].to(trainer_config.device)
+        decoder_cross_attention_mask = batch["target_input"]["cross_attention_mask"].to(trainer_config.device)
+
+        # Forward pass
+        logits = model(
+            encoder_input=encoder_input_ids,
+            decoder_input=decoder_input_ids,
+            encoder_self_attention_mask=encoder_self_attention_mask,
+            decoder_self_attention_mask=decoder_self_attention_mask,
+            decoder_cross_attention_mask=decoder_cross_attention_mask,
+        )
+
+        # Flatten for loss calculation
+        batch_size, _, vocab_size = logits.shape  # [batch, seq_len, vocab_size]
+        logits_flat = logits.view(-1, vocab_size) # [batch * seq_len, vocab_size]
+        targets_flat = decoder_input_ids.view(-1) # [batch * seq_len]
+
+        # Compute loss (no backward or optimizer step for validation)
+        loss = loss_fn(logits_flat, targets_flat)
+
+    return loss.item()
+
+
+def get_lr_scheduler(optimizer, model_dim, warmup_steps):
+    """
+    Custom learning rate scheduler as per the formula in the image.
+    
+    lr = d_model^(-0.5) * min(step_num^(-0.5), step_num * warmup_steps^(-1.5))
+    
+    Args:
+    - optimizer: The optimizer to which this scheduler will be attached.
+    - model_dim: The dimension of the model (d_model).
+    - warmup_steps: Number of warmup steps.
+
+    Returns:
+    - scheduler: A PyTorch LambdaLR scheduler implementing the learning rate formula.
+    """
+    def lr_lambda(step):
+        # Avoid division by zero for the first step
+        step = max(step, 1)
+        scale = model_dim ** -0.5
+        return scale * min(step ** -0.5, step * (warmup_steps ** -1.5))
+
+    return LambdaLR(optimizer, lr_lambda)
+
+
 if __name__ == "__main__":
     run = wandb.init(
         project="wmt14-de-en",
@@ -69,7 +141,7 @@ if __name__ == "__main__":
     )
 
     trainer_config = TrainerConfig()
-    wandb.config.update(trainer_config.__dict__)
+    wandb.config.update({"trainer_config": trainer_config.__dict__})
 
     # Get the dataset
     datasets = get_wmt_dataset(
@@ -100,7 +172,7 @@ if __name__ == "__main__":
         vocab_size=tokenizer.get_vocab_size(),
         max_seq_len=trainer_config.max_seq_len,
     )
-    wandb.config.update(transformer_config.__dict__)
+    wandb.config.update({"transformer_config": transformer_config.__dict__})
 
     # Build the model
     model = Transformer(config=transformer_config)
@@ -115,6 +187,9 @@ if __name__ == "__main__":
         eps=trainer_config.adam_eps,
     )
 
+    # Build the learning rate scheduler
+    scheduler = get_lr_scheduler(optimizer, trainer_config.model_dim, trainer_config.warmup_steps)
+
     # loss function
     loss_fn = nn.CrossEntropyLoss(
         label_smoothing=trainer_config.label_smoothing,
@@ -123,22 +198,46 @@ if __name__ == "__main__":
 
     # Train the model
     for epoch in range(trainer_config.num_epochs):
-        print(f"Epoch {epoch+1} - Training...")
+        # --------------------
+        # Training
+        # --------------------
+        progress_bar = tqdm(dataloaders["train"], desc=f"Epoch {epoch+1} - Training", leave=True)
         total_train_loss = 0.0
-        total_val_loss = 0.0
 
-        for idx, batch in enumerate(dataloaders["train"]):
-            step_loss = train_step(batch, model, optimizer, loss_fn)
-            total_train_loss += step_loss
+        for idx, batch in enumerate(progress_bar):
+            step_train_loss = train_step(batch, model, optimizer, loss_fn, trainer_config)
+            total_train_loss += step_train_loss
 
-            wandb.log({"train_loss": step_loss})
+            wandb.log({"train_loss": step_train_loss})
+            progress_bar.set_postfix(loss=step_train_loss)
 
-            # Print every 10 steps (running average)
-            if (idx + 1) % 100 == 0:
-                avg_loss = total_train_loss / (idx + 1)
-                print(f"  Step {idx+1} - Avg Train Loss: {avg_loss:.4f}")
+            if (idx+1) % 1000 == 0:
+                break
 
         # Final average for the epoch
         steps_this_epoch = idx + 1  # because idx is zero-based
         epoch_avg_loss = total_train_loss / steps_this_epoch
         print(f"Epoch {epoch+1} - Average Train Loss: {epoch_avg_loss:.4f}")
+        wandb.log({"epoch/train_loss": epoch_avg_loss})
+
+        # --------------------
+        # Validation
+        # --------------------
+        progress_bar = tqdm(dataloaders["val"], desc=f"Epoch {epoch+1} - Validation", leave=True)
+        total_val_loss = 0.0
+
+        for idx, batch in enumerate(progress_bar):
+            step_val_loss = valid_step(batch, model, loss_fn, trainer_config)
+            total_val_loss += step_val_loss
+
+            wandb.log({"val_loss": step_val_loss})
+            progress_bar.set_postfix(loss=step_val_loss)
+
+            if (idx+1) % 1000 == 0:
+                break
+
+        # Final average for the epoch
+        steps_this_epoch = idx + 1  # because idx is zero-based
+        epoch_avg_loss = total_val_loss / steps_this_epoch
+        print(f"Epoch {epoch+1} - Average Validation Loss: {epoch_avg_loss:.4f}")
+        wandb.log({"epoch/val_loss": epoch_avg_loss})
