@@ -114,7 +114,7 @@ def _collate_fn(batch, source, target, tokenizer, pad_id=0):
     zipped_list = [
         (
             sample["translation"][source],
-            sample["translation"][target],
+            f"[BOS] {sample['translation'][target]} [EOS]",
         )
         for sample in batch
     ]
@@ -126,11 +126,6 @@ def _collate_fn(batch, source, target, tokenizer, pad_id=0):
     ]
     tokenized_target_batch = [
         token.ids for token in tokenizer.encode_batch(target_batch)
-    ]
-    # Add start token (BOS) to beginning of each target sequence to shift tokens right by 1.
-    tokenized_target_batch = [
-        [tokenizer.token_to_id("[BOS]")] + token
-        for token in tokenized_target_batch
     ]
 
     # torch tensors
@@ -176,6 +171,7 @@ def _collate_fn(batch, source, target, tokenizer, pad_id=0):
 def get_wmt_dataloader(
     dataset,
     batch_size,
+    shuffle,
     source_lang,
     target_lang,
     tokenizer,
@@ -196,6 +192,7 @@ def get_wmt_dataloader(
     return DataLoader(
         dataset=dataset,
         batch_size=batch_size,
+        shuffle=shuffle,
         collate_fn=partial(
             _collate_fn,
             source=source_lang,
@@ -218,6 +215,7 @@ def get_wmt_dataloaders(
         dataloaders[dataset_name] = get_wmt_dataloader(
             dataset=dataset,
             batch_size=batch_size,
+            shuffle=True if dataset_name=="train" else False,
             source_lang=source_lang,
             target_lang=target_lang,
             tokenizer=tokenizer,

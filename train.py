@@ -1,8 +1,9 @@
+import os
 import wandb
 from tqdm import tqdm
 
 import torch
-torch.autograd.set_detect_anomaly(True)
+# torch.autograd.set_detect_anomaly(True)
 import torch.nn as nn
 from torch.optim.lr_scheduler import LambdaLR
 
@@ -17,10 +18,10 @@ class TrainerConfig:
     target_lang = "en"
     pad_id = 0
     pad_token = "[PAD]"
-    batch_size = 16
+    batch_size = 64
     num_epochs = 2
     learning_rate = 1e-4
-    max_seq_len = 512
+    max_seq_len = 256
     label_smoothing = 0.1
     device = "cuda" if torch.cuda.is_available() else "cpu"
     adam_beta_1 = 0.91
@@ -33,6 +34,8 @@ class TrainerConfig:
     num_blocks = 6
     dropout_rate = 0.1
     tokenizer_id = "llm-scratch/wmt-14-en-de-tok"
+    use_mixed_precision=True
+    checkpoint_dir="models/"
 
 
 def train_step(
@@ -40,6 +43,7 @@ def train_step(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     loss_fn: nn.Module,
+    scaler: torch.cuda.amp.GradScaler,
     trainer_config: TrainerConfig,
 ) -> float:
     model.train()
@@ -52,22 +56,26 @@ def train_step(
 
     # forward pass and loss calculation
     optimizer.zero_grad()
-    logits = model(
-        encoder_input=encoder_input_ids,
-        decoder_input=decoder_input_ids,
-        encoder_self_attention_mask=encoder_self_attention_mask,
-        decoder_self_attention_mask=decoder_self_attention_mask,
-        decoder_cross_attention_mask=decoder_cross_attention_mask,
-    )
 
-    batch_size, _, vocab_size = logits.shape  # batch, decoder_seq_len, vocab_size
-    logits_flat = logits.view(-1, vocab_size)  # [1 * decoder_seq_len, vocab_size]
-    targets_flat = decoder_input_ids.view(-1)  # [1 * decoder_seq_len]
+    with torch.autocast(device_type=trainer_config.device, dtype=torch.float16, enabled=trainer_config.use_mixed_precision):
+        logits = model(
+            encoder_input=encoder_input_ids,
+            decoder_input=decoder_input_ids,
+            encoder_self_attention_mask=encoder_self_attention_mask,
+            decoder_self_attention_mask=decoder_self_attention_mask,
+            decoder_cross_attention_mask=decoder_cross_attention_mask,
+        )
 
-    loss = loss_fn(logits_flat, targets_flat)
-    loss.backward()
-    optimizer.step()
+        batch_size, _, vocab_size = logits.shape   # batch, decoder_seq_len, vocab_size
+        logits_flat = logits.view(-1, vocab_size)  # [1 * decoder_seq_len, vocab_size]
+        targets_flat = decoder_input_ids.view(-1)  # [1 * decoder_seq_len]
 
+        loss = loss_fn(logits_flat, targets_flat)
+    
+    scaler.scale(loss).backward()
+    scaler.step(optimizer)
+    scaler.update()
+    
     return loss.item()
 
 
@@ -111,29 +119,6 @@ def valid_step(
     return loss.item()
 
 
-def get_lr_scheduler(optimizer, model_dim, warmup_steps):
-    """
-    Custom learning rate scheduler as per the formula in the image.
-    
-    lr = d_model^(-0.5) * min(step_num^(-0.5), step_num * warmup_steps^(-1.5))
-    
-    Args:
-    - optimizer: The optimizer to which this scheduler will be attached.
-    - model_dim: The dimension of the model (d_model).
-    - warmup_steps: Number of warmup steps.
-
-    Returns:
-    - scheduler: A PyTorch LambdaLR scheduler implementing the learning rate formula.
-    """
-    def lr_lambda(step):
-        # Avoid division by zero for the first step
-        step = max(step, 1)
-        scale = model_dim ** -0.5
-        return scale * min(step ** -0.5, step * (warmup_steps ** -1.5))
-
-    return LambdaLR(optimizer, lr_lambda)
-
-
 if __name__ == "__main__":
     run = wandb.init(
         project="wmt14-de-en",
@@ -141,7 +126,7 @@ if __name__ == "__main__":
     )
 
     trainer_config = TrainerConfig()
-    wandb.config.update({"trainer_config": trainer_config.__dict__})
+    wandb.config.update({"trainer_config": vars(trainer_config)})
 
     # Get the dataset
     datasets = get_wmt_dataset(
@@ -187,14 +172,14 @@ if __name__ == "__main__":
         eps=trainer_config.adam_eps,
     )
 
-    # Build the learning rate scheduler
-    scheduler = get_lr_scheduler(optimizer, trainer_config.model_dim, trainer_config.warmup_steps)
-
     # loss function
     loss_fn = nn.CrossEntropyLoss(
         label_smoothing=trainer_config.label_smoothing,
         ignore_index=trainer_config.pad_id,
     )
+
+    # Mixed precision
+    scaler = torch.amp.GradScaler(trainer_config.device, enabled=trainer_config.use_mixed_precision)
 
     # Train the model
     for epoch in range(trainer_config.num_epochs):
@@ -205,20 +190,24 @@ if __name__ == "__main__":
         total_train_loss = 0.0
 
         for idx, batch in enumerate(progress_bar):
-            step_train_loss = train_step(batch, model, optimizer, loss_fn, trainer_config)
+            step_train_loss = train_step(batch, model, optimizer, loss_fn, scaler, trainer_config)
             total_train_loss += step_train_loss
 
             wandb.log({"train_loss": step_train_loss})
             progress_bar.set_postfix(loss=step_train_loss)
 
-            if (idx+1) % 1000 == 0:
+            # if (idx + 1) % 100 == 0:
+            #     avg_loss = total_train_loss / (idx + 1)
+            #     print(f"  Step {idx+1} - Avg Train Loss: {avg_loss:.4f}")
+
+            if (idx+1) % 100 == 0:
                 break
 
         # Final average for the epoch
         steps_this_epoch = idx + 1  # because idx is zero-based
-        epoch_avg_loss = total_train_loss / steps_this_epoch
-        print(f"Epoch {epoch+1} - Average Train Loss: {epoch_avg_loss:.4f}")
-        wandb.log({"epoch/train_loss": epoch_avg_loss})
+        epoch_avg_train_loss = total_train_loss / steps_this_epoch
+        print(f"Epoch {epoch+1} - Average Train Loss: {epoch_avg_train_loss:.4f}")
+        wandb.log({"epoch/train_loss": epoch_avg_train_loss})
 
         # --------------------
         # Validation
@@ -230,7 +219,6 @@ if __name__ == "__main__":
             step_val_loss = valid_step(batch, model, loss_fn, trainer_config)
             total_val_loss += step_val_loss
 
-            wandb.log({"val_loss": step_val_loss})
             progress_bar.set_postfix(loss=step_val_loss)
 
             if (idx+1) % 1000 == 0:
@@ -238,6 +226,20 @@ if __name__ == "__main__":
 
         # Final average for the epoch
         steps_this_epoch = idx + 1  # because idx is zero-based
-        epoch_avg_loss = total_val_loss / steps_this_epoch
-        print(f"Epoch {epoch+1} - Average Validation Loss: {epoch_avg_loss:.4f}")
-        wandb.log({"epoch/val_loss": epoch_avg_loss})
+        epoch_avg_val_loss = total_val_loss / steps_this_epoch
+        print(f"Epoch {epoch+1} - Average Validation Loss: {epoch_avg_val_loss:.4f}")
+        wandb.log({"epoch/val_loss": epoch_avg_val_loss})
+
+        # --------------------
+        # Checkpointing
+        # --------------------
+        # 1) Always save a checkpoint each epoch
+        ckpt_path = os.path.join(trainer_config.checkpoint_dir, f"checkpoint_epoch_{epoch+1}.pt")
+        torch.save({
+            'epoch': epoch+1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scaler_state_dict': scaler.state_dict(),
+            'train_loss': epoch_avg_train_loss,
+            'val_loss': epoch_avg_val_loss,
+        }, ckpt_path)
