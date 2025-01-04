@@ -200,8 +200,8 @@ if __name__ == "__main__":
             #     avg_loss = total_train_loss / (idx + 1)
             #     print(f"  Step {idx+1} - Avg Train Loss: {avg_loss:.4f}")
 
-            if (idx+1) % 100 == 0:
-                break
+            # if (idx+1) % 100 == 0:
+            #     break
 
         # Final average for the epoch
         steps_this_epoch = idx + 1  # because idx is zero-based
@@ -221,8 +221,8 @@ if __name__ == "__main__":
 
             progress_bar.set_postfix(loss=step_val_loss)
 
-            if (idx+1) % 1000 == 0:
-                break
+            # if (idx+1) % 1000 == 0:
+            #     break
 
         # Final average for the epoch
         steps_this_epoch = idx + 1  # because idx is zero-based
