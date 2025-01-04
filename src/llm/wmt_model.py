@@ -6,8 +6,6 @@ import torch
 from jaxtyping import Float
 from torch import Tensor, nn
 
-from tokenizers import Tokenizer
-
 
 @dataclass
 class TransformerConfig:
@@ -123,7 +121,9 @@ class MultiHeadAttention(nn.Module):
         B, q_len, _ = query.size()
         B, k_len, _ = key.size()
 
-        attn_bias = torch.zeros(B, self.num_heads, q_len, k_len, dtype=torch.float32)
+        attn_bias = torch.zeros(
+            B, self.num_heads, q_len, k_len, dtype=query.dtype, device=query.device
+        )
     
         # 1) Project Q, K, V
         q = self.W_q(query)  # [B, q_len, model_dim]
@@ -362,7 +362,7 @@ class Embedding(nn.Module):
 class PositionalEncoding(nn.Module):
     def __init__(self, model_dim: int, max_seq_len: int, dropout_rate: float):
         super().__init__()
-        self.position_encoding = torch.zeros(
+        position_encoding = torch.zeros(
             max_seq_len, model_dim
         )  # [max_seq_len, model_dim]
         positions = torch.arange(0, max_seq_len).unsqueeze(1)  # [max_seq_len, 1]
@@ -371,8 +371,11 @@ class PositionalEncoding(nn.Module):
         )  # [model_dim//2]
         freq = positions * div_term  # [max_seq_len, model_dim//2]
         # all the positions but even spaced dimensions
-        self.position_encoding[:, 0::2] = torch.sin(freq)
-        self.position_encoding[:, 1::2] = torch.cos(freq)
+        position_encoding[:, 0::2] = torch.sin(freq)
+        position_encoding[:, 1::2] = torch.cos(freq)
+
+        # Register it as a buffer so that .to(device) moves it properly
+        self.register_buffer("position_encoding", position_encoding)
 
         self.residual_dropout = ResidualDropout(dropout_rate=dropout_rate)
 
@@ -467,6 +470,7 @@ class Transformer(nn.Module):
 
 if __name__ == "__main__":
     from llm.wmt_data_utils import _collate_fn
+    from tokenizers import Tokenizer
 
     tokenizer = Tokenizer.from_pretrained("llm-scratch/wmt-14-en-de-tok")
     tokenizer.enable_padding(pad_token="[PAD]")
@@ -511,15 +515,18 @@ if __name__ == "__main__":
         vocab_size=37000,
         max_seq_len=100,
     )
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
     model = Transformer(config=config)
+    model.to(device)
     print(model)
 
     out = model(
-        encoder_input=encoder_input_ids,
-        decoder_input=decoder_input_ids,
-        encoder_self_attention_mask=encoder_self_attention_mask,
-        decoder_self_attention_mask=decoder_self_attention_mask,
-        decoder_cross_attention_mask=decoder_cross_attention_mask,
+        encoder_input=encoder_input_ids.to(device),
+        decoder_input=decoder_input_ids.to(device),
+        encoder_self_attention_mask=encoder_self_attention_mask.to(device),
+        decoder_self_attention_mask=decoder_self_attention_mask.to(device),
+        decoder_cross_attention_mask=decoder_cross_attention_mask.to(device),
     )
 
     print(f"{out.shape=}")
@@ -536,7 +543,7 @@ if __name__ == "__main__":
     )
 
     out = out.view(-1, out.shape[-1])
-    targets = decoder_input_ids.view(-1)
+    targets = decoder_input_ids.to(device).view(-1)
 
     loss = loss_fn(out, targets)
     print(f"{loss=}")
