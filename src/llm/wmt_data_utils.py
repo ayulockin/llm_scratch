@@ -97,7 +97,7 @@ def decode_wmt_tokens(
         return tokenizer.decode(tokens)
 
 
-def _collate_fn(batch, source, target, tokenizers, pad_id=1):
+def _collate_fn(batch, source, target, tokenizer, pad_id=0):
     """
     Collate function for the dataloader. This will collate the batches into a single tensor.
 
@@ -105,7 +105,7 @@ def _collate_fn(batch, source, target, tokenizers, pad_id=1):
         batch (list): The batch of data.
         source (str): The source language.
         target (str): The target language.
-        tokenizers (dict): The tokenizers for the specified dataset name.
+        tokenizer (Tokenizer): The tokenizer.
         pad_id (int): The padding id.
 
     Returns:
@@ -122,14 +122,14 @@ def _collate_fn(batch, source, target, tokenizers, pad_id=1):
 
     # tokenize the batches
     tokenized_source_batch = [
-        token.ids for token in tokenizers[source].encode_batch(source_batch)
+        token.ids for token in tokenizer.encode_batch(source_batch)
     ]
     tokenized_target_batch = [
-        token.ids for token in tokenizers[target].encode_batch(target_batch)
+        token.ids for token in tokenizer.encode_batch(target_batch)
     ]
-    # Add start token (<s>) to beginning of each target sequence to shift tokens right by 1.
+    # Add start token (BOS) to beginning of each target sequence to shift tokens right by 1.
     tokenized_target_batch = [
-        [tokenizers[target].token_to_id("<s>")] + token
+        [tokenizer.token_to_id("[BOS]")] + token
         for token in tokenized_target_batch
     ]
 
@@ -159,7 +159,6 @@ def _collate_fn(batch, source, target, tokenizers, pad_id=1):
     decoder_cross_attention_mask = (
         decoder_attention_mask & encoder_attention_mask
     )
-
 
     return {
         "source_input": {

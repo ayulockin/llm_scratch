@@ -6,6 +6,8 @@ import torch
 from jaxtyping import Float
 from torch import Tensor, nn
 
+from tokenizers import Tokenizer
+
 
 @dataclass
 class TransformerConfig:
@@ -14,8 +16,7 @@ class TransformerConfig:
     num_heads: int
     num_blocks: int
     dropout_rate: float
-    vocab_src_size: int
-    vocab_tgt_size: int
+    vocab_size: int
     max_seq_len: int
 
 
@@ -402,11 +403,8 @@ class Transformer(nn.Module):
         config: TransformerConfig,
     ):
         super().__init__()
-        self.source_embedding = Embedding(
-            model_dim=config.model_dim, vocab_size=config.vocab_src_size
-        )
-        self.target_embedding = Embedding(
-            model_dim=config.model_dim, vocab_size=config.vocab_tgt_size
+        self.embedding = Embedding(
+            model_dim=config.model_dim, vocab_size=config.vocab_size
         )
         self.positional_encoding = PositionalEncoding(
             model_dim=config.model_dim,
@@ -428,8 +426,9 @@ class Transformer(nn.Module):
             dropout_rate=config.dropout_rate,
         )
         self.lm_head = LMHead(
-            model_dim=config.model_dim, vocab_size=config.vocab_tgt_size
+            model_dim=config.model_dim, vocab_size=config.vocab_size
         )
+        self.lm_head.weight = self.embedding.embedding.weight
 
     def forward(
         self,
@@ -439,9 +438,9 @@ class Transformer(nn.Module):
         decoder_self_attention_mask: Float[Tensor, "batch dec_seq_len dec_seq_len"],  # type: ignore
         decoder_cross_attention_mask: Float[Tensor, "batch dec_seq_len enc_seq_len"],  # type: ignore
         pad_id: int = 1,
-    ) -> Float[Tensor, "batch dec_seq_len vocab_tgt_size"]:  # type: ignore
+    ) -> Float[Tensor, "batch dec_seq_len vocab_size"]:  # type: ignore
         # Embed the source input and add positional encoding
-        encoder_input = self.source_embedding(encoder_input)
+        encoder_input = self.embedding(encoder_input)
         encoder_input = self.positional_encoding(encoder_input)
 
         # Encode the source input
@@ -450,7 +449,7 @@ class Transformer(nn.Module):
         )
 
         # Embed the target input and add positional encoding
-        decoder_input = self.target_embedding(decoder_input)
+        decoder_input = self.embedding(decoder_input)
         decoder_input = self.positional_encoding(decoder_input)
 
         # Decode the target input
@@ -467,11 +466,11 @@ class Transformer(nn.Module):
 
 
 if __name__ == "__main__":
-    from llm.wmt_data_utils import _collate_fn, get_wmt_tokenizers
+    from llm.wmt_data_utils import _collate_fn
 
-    tokenizers = get_wmt_tokenizers("en-de")
-    tokenizers["en"].enable_padding(pad_id=1, pad_token="<pad>")
-    tokenizers["de"].enable_padding(pad_id=1, pad_token="<pad>")
+    tokenizer = Tokenizer.from_pretrained("llm-scratch/wmt-14-en-de-tok")
+    tokenizer.enable_padding(pad_token="[PAD]")
+    tokenizer.enable_truncation(max_length=512)
 
     batch = [
         {
@@ -488,7 +487,7 @@ if __name__ == "__main__":
         },
     ]
 
-    inputs = _collate_fn(batch, "en", "de", tokenizers)
+    inputs = _collate_fn(batch, "en", "de", tokenizer)
     print(f"{inputs=}")
 
     encoder_input_ids = inputs["source_input"]["input_ids"]
@@ -509,8 +508,7 @@ if __name__ == "__main__":
         num_heads=4,
         num_blocks=2,
         dropout_rate=0.1,
-        vocab_src_size=15000,
-        vocab_tgt_size=15000,
+        vocab_size=37000,
         max_seq_len=100,
     )
     model = Transformer(config=config)
