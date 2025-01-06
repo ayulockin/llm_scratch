@@ -50,7 +50,6 @@ class FeedForward(nn.Module):
         inputs: Float[Tensor, "batch seq_len model_dim"],  # type: ignore
     ) -> Float[Tensor, "batch seq_len model_dim"]:  # type: ignore
         x = self.layer1(inputs)
-        # TODO: might add dropout here
         x = self.activation(x)
         x = self.layer2(x)
         return x
