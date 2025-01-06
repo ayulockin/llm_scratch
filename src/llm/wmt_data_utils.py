@@ -120,50 +120,38 @@ def _collate_fn(batch, source, target, tokenizer, pad_id=0):
     ]
     source_batch, target_batch = list(zip(*zipped_list))
 
+    source_batch = tokenizer.encode_batch(source_batch)
+    target_batch = tokenizer.encode_batch(target_batch)
+
     # tokenize the batches
     tokenized_source_batch = [
-        token.ids for token in tokenizer.encode_batch(source_batch)
+        token.ids for token in source_batch
     ]
     tokenized_target_batch = [
-        token.ids for token in tokenizer.encode_batch(target_batch)
+        token.ids for token in target_batch
+    ]
+
+    encoder_attention_mask = [
+        token.attention_mask for token in source_batch
+    ]
+    decoder_attention_mask = [
+        token.attention_mask for token in target_batch
     ]
 
     # torch tensors
     tokenized_source_batch = torch.tensor(tokenized_source_batch)
     tokenized_target_batch = torch.tensor(tokenized_target_batch)
-
-    # Encoder attention mask
-    encoder_attention_mask = (tokenized_source_batch != pad_id).bool()
-    # [batch, enc_seq_len] -> [batch, enc_seq_len, enc_seq_len]
-    B, enc_seq_len = encoder_attention_mask.size()
-    encoder_self_attention_mask = encoder_attention_mask.unsqueeze(1).expand(
-        B, enc_seq_len, enc_seq_len
-    )
-
-    # Decoder attention mask
-    decoder_attention_mask = (tokenized_target_batch != pad_id).bool()
-    # [batch, dec_seq_len] -> [batch, dec_seq_len, dec_seq_len]
-    _, dec_seq_len = decoder_attention_mask.size()
-    decoder_self_attention_mask = decoder_attention_mask.unsqueeze(1).expand(
-        B, dec_seq_len, dec_seq_len
-    )
-
-    # Decoder cross attention mask
-    decoder_attention_mask = decoder_attention_mask.unsqueeze(2)  # [batch, dec_len, 1]
-    encoder_attention_mask = encoder_attention_mask.unsqueeze(1)  # [batch, 1, enc_len]
-    decoder_cross_attention_mask = (
-        decoder_attention_mask & encoder_attention_mask
-    )
+    encoder_attention_mask = torch.tensor(encoder_attention_mask)
+    decoder_attention_mask = torch.tensor(decoder_attention_mask)
 
     return {
         "source_input": {
             "input_ids": tokenized_source_batch,
-            "self_attention_mask": encoder_self_attention_mask,
+            "self_attention_mask": encoder_attention_mask,
         },
         "target_input": {
             "input_ids": tokenized_target_batch,
-            "self_attention_mask": decoder_self_attention_mask,
-            "cross_attention_mask": decoder_cross_attention_mask,
+            "self_attention_mask": decoder_attention_mask,
         },
     }
 
