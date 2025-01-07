@@ -18,7 +18,7 @@ class TrainerConfig:
     target_lang = "en"
     pad_id = 0
     pad_token = "[PAD]"
-    batch_size = 64
+    batch_size = 32
     num_epochs = 2
     learning_rate = 1e-4
     max_seq_len = 256
@@ -34,7 +34,7 @@ class TrainerConfig:
     num_blocks = 6
     dropout_rate = 0.1
     tokenizer_id = "llm-scratch/wmt-14-en-de-tok"
-    use_mixed_precision=True
+    use_mixed_precision=False
     checkpoint_dir="models/"
 
 
@@ -52,7 +52,6 @@ def train_step(
     decoder_input_ids = batch["target_input"]["input_ids"].to(trainer_config.device)
     encoder_self_attention_mask = batch["source_input"]["self_attention_mask"].to(trainer_config.device)
     decoder_self_attention_mask = batch["target_input"]["self_attention_mask"].to(trainer_config.device)
-    decoder_cross_attention_mask = batch["target_input"]["cross_attention_mask"].to(trainer_config.device)
 
     # forward pass and loss calculation
     optimizer.zero_grad()
@@ -63,7 +62,6 @@ def train_step(
             decoder_input=decoder_input_ids,
             encoder_self_attention_mask=encoder_self_attention_mask,
             decoder_self_attention_mask=decoder_self_attention_mask,
-            decoder_cross_attention_mask=decoder_cross_attention_mask,
         )
 
         batch_size, _, vocab_size = logits.shape   # batch, decoder_seq_len, vocab_size
@@ -97,7 +95,6 @@ def valid_step(
         decoder_input_ids = batch["target_input"]["input_ids"].to(trainer_config.device)
         encoder_self_attention_mask = batch["source_input"]["self_attention_mask"].to(trainer_config.device)
         decoder_self_attention_mask = batch["target_input"]["self_attention_mask"].to(trainer_config.device)
-        decoder_cross_attention_mask = batch["target_input"]["cross_attention_mask"].to(trainer_config.device)
 
         # Forward pass
         logits = model(
@@ -105,7 +102,6 @@ def valid_step(
             decoder_input=decoder_input_ids,
             encoder_self_attention_mask=encoder_self_attention_mask,
             decoder_self_attention_mask=decoder_self_attention_mask,
-            decoder_cross_attention_mask=decoder_cross_attention_mask,
         )
 
         # Flatten for loss calculation
@@ -234,7 +230,10 @@ if __name__ == "__main__":
         # Checkpointing
         # --------------------
         # 1) Always save a checkpoint each epoch
-        ckpt_path = os.path.join(trainer_config.checkpoint_dir, f"checkpoint_epoch_{epoch+1}.pt")
+        ckpt_path = os.path.join(
+            trainer_config.checkpoint_dir, 
+            f"checkpoint_epoch_{epoch+1}_train_loss-{epoch_avg_train_loss:.4f}_val_loss-{epoch_avg_val_loss:.4f}.pt"
+        )
         torch.save({
             'epoch': epoch+1,
             'model_state_dict': model.state_dict(),
