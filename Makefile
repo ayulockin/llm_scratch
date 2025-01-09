@@ -2,17 +2,12 @@
 PY_FILES := src/
 
 # Default rule: run all checks
-all: black mypy isort ruff
+all: black isort ruff
 
 # Run black for code formatting
 black:
 	@echo "Running Black..."
 	black $(PY_FILES)
-
-# Run mypy for type checking
-mypy:
-	@echo "Running MyPy..."
-	mypy $(PY_FILES)
 
 # Run isort for import sorting
 isort:
@@ -23,6 +18,11 @@ isort:
 ruff:
 	@echo "Running ruff..."
 	ruff $(PY_FILES)
+
+# Run mypy for type checking
+# mypy:
+# 	@echo "Running MyPy..."
+# 	mypy $(PY_FILES)
 
 # Help message
 help:

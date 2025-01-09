@@ -1,20 +1,12 @@
-from torch.utils.data import DataLoader
-from datasets import load_dataset
 from functools import partial
-import torch
-
 from typing import Union
 
-from tokenizers import (
-    Tokenizer,
-    models,
-    normalizers,
-    pre_tokenizers,
-    decoders,
-    trainers,
-)
+import torch
 from datasets import load_dataset
 from fire import Fire
+from tokenizers import (Tokenizer, decoders, models, normalizers,
+                        pre_tokenizers, trainers)
+from torch.utils.data import DataLoader
 
 
 def get_wmt_dataset(name: str):
@@ -74,7 +66,9 @@ def get_wmt_tokenizers(dataset_name, path="data"):
     try:
         tokenizers = {}
         for lang in dataset_name.split("-"):
-            tokenizers[lang] = Tokenizer.from_file(f"{path}/{lang}_tokenizer.json")
+            tokenizer_path = f"{path}/{lang}_tokenizer.json"
+            print(f"Loading tokenizer from {tokenizer_path}...")
+            tokenizers[lang] = Tokenizer.from_file(tokenizer_path)
         return tokenizers
     except FileNotFoundError:
         raise FileNotFoundError(
@@ -103,7 +97,7 @@ def decode_wmt_tokens(
         return tokenizer.decode(tokens)
 
 
-def _collate_fn(batch, source, target, tokenizers):
+def _collate_fn(batch, source, target, tokenizer, pad_id=0):
     """
     Collate function for the dataloader. This will collate the batches into a single tensor.
 
@@ -111,7 +105,8 @@ def _collate_fn(batch, source, target, tokenizers):
         batch (list): The batch of data.
         source (str): The source language.
         target (str): The target language.
-        tokenizers (dict): The tokenizers for the specified dataset name.
+        tokenizer (Tokenizer): The tokenizer.
+        pad_id (int): The padding id.
 
     Returns:
         tuple: The collated batches.
@@ -119,43 +114,56 @@ def _collate_fn(batch, source, target, tokenizers):
     zipped_list = [
         (
             sample["translation"][source],
-            sample["translation"][target],
+            f"[BOS] {sample['translation'][target]} [EOS]",
         )
         for sample in batch
     ]
     source_batch, target_batch = list(zip(*zipped_list))
 
-    # enable padding for the tokenizers
-    # we do the longest sequence length for padding
-    tokenizers[source].enable_padding(pad_id=1, pad_token="<pad>")
-    tokenizers[target].enable_padding(pad_id=1, pad_token="<pad>")
+    source_batch = tokenizer.encode_batch(source_batch)
+    target_batch = tokenizer.encode_batch(target_batch)
 
     # tokenize the batches
     tokenized_source_batch = [
-        token.ids for token in tokenizers[source].encode_batch(source_batch)
+        token.ids for token in source_batch
     ]
     tokenized_target_batch = [
-        token.ids for token in tokenizers[target].encode_batch(target_batch)
+        token.ids for token in target_batch
     ]
-    # Add start token (<s>) to beginning of each target sequence to shift tokens right by 1.
-    tokenized_target_batch = [
-        [tokenizers[target].token_to_id("<s>")] + token
-        for token in tokenized_target_batch
+
+    encoder_attention_mask = [
+        token.attention_mask for token in source_batch
+    ]
+    decoder_attention_mask = [
+        token.attention_mask for token in target_batch
     ]
 
     # torch tensors
     tokenized_source_batch = torch.tensor(tokenized_source_batch)
     tokenized_target_batch = torch.tensor(tokenized_target_batch)
+    encoder_attention_mask = torch.tensor(encoder_attention_mask)
+    decoder_attention_mask = torch.tensor(decoder_attention_mask)
 
-    return tokenized_source_batch, tokenized_target_batch
+    return {
+        "source_input": {
+            "input_ids": tokenized_source_batch,
+            "self_attention_mask": encoder_attention_mask,
+        },
+        "target_input": {
+            "input_ids": tokenized_target_batch,
+            "self_attention_mask": decoder_attention_mask,
+        },
+    }
 
 
 def get_wmt_dataloader(
     dataset,
     batch_size,
+    shuffle,
     source_lang,
     target_lang,
-    tokenizer_path="data",
+    tokenizer,
+    pad_id=0,
 ):
     """
     Get the dataloader for the specified dataset name.
@@ -165,19 +173,42 @@ def get_wmt_dataloader(
         batch_size (int): The batch size.
         source_lang (str): The source language.
         target_lang (str): The target language.
-        tokenizer_path (str): The path to the tokenizers.
 
     Returns:
         DataLoader: The dataloader for the specified dataset name.
     """
-    tokenizers = get_wmt_tokenizers(f"{source_lang}-{target_lang}", tokenizer_path)
     return DataLoader(
         dataset=dataset,
         batch_size=batch_size,
+        shuffle=shuffle,
         collate_fn=partial(
-            _collate_fn, source=source_lang, target=target_lang, tokenizers=tokenizers
+            _collate_fn,
+            source=source_lang,
+            target=target_lang,
+            tokenizer=tokenizer,
+            pad_id=pad_id,
         ),
     )
+
+
+def get_wmt_dataloaders(
+    datasets: dict,
+    tokenizer: Tokenizer,
+    batch_size: int = 32,
+    source_lang: str = "en",
+    target_lang: str = "de",
+):
+    dataloaders = {}
+    for dataset_name, dataset in datasets.items():
+        dataloaders[dataset_name] = get_wmt_dataloader(
+            dataset=dataset,
+            batch_size=batch_size,
+            shuffle=True if dataset_name=="train" else False,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            tokenizer=tokenizer,
+        )
+    return dataloaders
 
 
 def create_separate_wmt_tokenizers(
