@@ -26,9 +26,11 @@ The `baseline` folder contains the initial implementation of the Transformer mod
 
 ## Getting Started
 
+Fork this repository and then clone it in your local system.
+
 ```bash
-git clone https://github.com/your-username/attention-is-all-you-need.git
-cd attention-is-all-you-need/baseline
+git clone https://github.com/your-username/llm-scratch.git
+cd llm-scratch/baseline
 ```
 
 Then, install the required packages using:

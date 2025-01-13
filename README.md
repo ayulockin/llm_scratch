@@ -1,6 +1,4 @@
-# Attention Is All You Need - Educational Repository
-
-Welcome to the **Educational** Attention Is All You Need repository! 
+# LLM Deep Dive - Educational Repository
 
 This project aims to provide a step-by-step implementation of the Transformer model introduced in the ["Attention Is All You Need"](https://arxiv.org/abs/1706.03762) paper by Vaswani et al. The goal is to offer an educational journey into understanding Transformers, from building the foundational model to exploring optimizations for inference, training, and more.
 
