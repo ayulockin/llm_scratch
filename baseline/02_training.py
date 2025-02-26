@@ -1,5 +1,4 @@
-from tokenizers import Tokenizer
-from datasets import load_dataset
+import config
 
 import torch
 from torch import nn
@@ -8,46 +7,20 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
+from huggingface_hub import PyTorchModelHubMixin
+from transformers import AutoTokenizer
+from datasets import load_dataset
+
 import math
-from jaxtyping import Float, Bool
+import wandb
+from functools import partial
+from jaxtyping import Integer, Float, Bool
 from dataclasses import dataclass
 
-from tqdm import tqdm
 
-import wandb
-from huggingface_hub import PyTorchModelHubMixin
-from functools import partial
-import config
-
-
-def collate_fn(batch, tokenizer):
-    source = []
-    target = []
-    for sample in batch:
-        source.append(sample["de"])
-        target.append(f"[BOS] {sample['en']} [EOS]")
-
-    source = tokenizer.encode_batch(source)
-    target = tokenizer.encode_batch(target)
-
-    return {
-        "input_ids": torch.tensor([s.ids for s in source]).int(),
-        "input_attention_mask": torch.tensor([s.attention_mask for s in source]).bool(),
-        "labels": torch.tensor([t.ids for t in target]).int(),
-        "labels_attention_mask": torch.tensor(
-            [t.attention_mask for t in target]
-        ).bool(),
-    }
-
-
-def learning_rate_schedule(step_num, model_dim):
-    if step_num == 0:
-        step_num = 1  # Prevent division by zero
-    scale = model_dim**-0.5
-    step_term = min(step_num**-0.5, step_num * warmup_steps**-1.5)
-    return scale * step_term
-
-
+################################################################################
+# Embeddings
+################################################################################
 class Embedding(nn.Module):
     def __init__(self, model_dim: int, vocab_size: int):
         super().__init__()
@@ -86,6 +59,9 @@ class PositionalEncoding(nn.Module):
         return x
 
 
+################################################################################
+# FFN
+################################################################################
 class FeedForward(nn.Module):
     def __init__(
         self,
@@ -107,6 +83,9 @@ class FeedForward(nn.Module):
         return x
 
 
+################################################################################
+# Attention
+################################################################################
 class ScaledDotProductAttention(nn.Module):
     def __init__(self, dim_k, dim_v, model_dim):
         super().__init__()
@@ -116,7 +95,14 @@ class ScaledDotProductAttention(nn.Module):
         self.W_k = nn.Linear(model_dim, dim_k, bias=False)
         self.W_v = nn.Linear(model_dim, dim_v, bias=False)
 
-    def forward(self, query, key, value, key_attention_mask, is_causal=False):
+    def forward(
+        self,
+        query: Float[Tensor, "batch q_seq_len model_dim"],
+        key: Float[Tensor, "batch k_seq_len model_dim"],
+        value: Float[Tensor, "batch v_seq_len model_dim"],
+        padding_mask: Integer[Tensor, "batch k_seq_len"],
+        is_causal: Bool = False,
+    ):
         query = self.W_q(query)
         key = self.W_k(key)
         value = self.W_v(value)
@@ -124,15 +110,17 @@ class ScaledDotProductAttention(nn.Module):
         similarity = torch.einsum("bqd, bkd -> bqk", query, key)
         scaled_similarity = torch.divide(similarity, math.sqrt(self.dim_k))
 
-        key_attention_mask = key_attention_mask.unsqueeze(1)
+        padding_mask = padding_mask.unsqueeze(1)  # Not sure why
 
         if is_causal:
+            # create the causal mask and use the padding mask to create
+            # the ultimate mask that is use before softmax
             causal_mask = torch.triu(
                 torch.ones_like(scaled_similarity).bool(), diagonal=1
             )
-            mask = torch.logical_or(key_attention_mask, causal_mask)
+            mask = torch.logical_or(padding_mask, causal_mask)
         else:
-            mask = key_attention_mask
+            mask = padding_mask
 
         scaled_similarity = scaled_similarity.masked_fill(
             torch.logical_not(mask), value=-torch.inf
@@ -164,7 +152,7 @@ class MultiHeadAttention(nn.Module):
         query: Float[Tensor, "batch q_seq_len model_dim"],
         key: Float[Tensor, "batch k_seq_len model_dim"],
         value: Float[Tensor, "batch k_seq_len model_dim"],
-        key_attention_mask: Bool[Tensor, "batch k_seq_len"],
+        padding_mask: Bool[Tensor, "batch k_seq_len"],
         is_causal: bool = False,
     ) -> Float[Tensor, "batch seq_len model_dim"]:
         outputs = list()
@@ -173,8 +161,8 @@ class MultiHeadAttention(nn.Module):
                 query=query,
                 key=key,
                 value=value,
-                key_attention_mask=key_attention_mask,
-                is_causal=False,
+                padding_mask=padding_mask,
+                is_causal=is_causal,
             )
             outputs.append(output)
 
@@ -183,6 +171,9 @@ class MultiHeadAttention(nn.Module):
         return outputs
 
 
+################################################################################
+# Encoder
+################################################################################
 class EncoderBlock(nn.Module):
     def __init__(
         self,
@@ -192,7 +183,7 @@ class EncoderBlock(nn.Module):
         dropout_rate: float,
     ):
         super().__init__()
-        self.multi_head_attention = MultiHeadAttention(
+        self.multi_head_self_attention = MultiHeadAttention(
             model_dim=model_dim, num_heads=num_heads
         )
         self.feed_forward = FeedForward(
@@ -206,15 +197,15 @@ class EncoderBlock(nn.Module):
     def forward(
         self,
         inputs: Float[Tensor, "batch enc_seq_len model_dim"],
-        key_attention_mask: Bool[Tensor, "batch enc_seq_len"],
+        padding_mask: Bool[Tensor, "batch enc_seq_len"],
     ) -> Float[Tensor, "batch enc_seq_len model_dim"]:
         residual = inputs
 
-        x = self.multi_head_attention(
+        x = self.multi_head_self_attention(
             query=inputs,
             key=inputs,
             value=inputs,
-            key_attention_mask=key_attention_mask,
+            padding_mask=padding_mask,
         )
         x = self.dropout1(x) + residual
         x = self.layer_norm1(x)
@@ -251,15 +242,18 @@ class Encoder(nn.Module):
     def forward(
         self,
         encoder_input: Float[Tensor, "batch enc_seq_len model_dim"],
-        key_attention_mask: Bool[Tensor, "batch enc_seq_len"],
+        padding_mask: Bool[Tensor, "batch enc_seq_len"],
     ) -> Float[Tensor, "batch enc_seq_len model_dim"]:
         # We pass the input through each encoder layer and return the final output
         for encoder_layer in self.encoder_layers:
-            encoder_input = encoder_layer(encoder_input, key_attention_mask)
+            encoder_input = encoder_layer(encoder_input, padding_mask)
 
         return encoder_input
 
 
+################################################################################
+# Decoder
+################################################################################
 class DecoderBlock(nn.Module):
     def __init__(
         self,
@@ -269,10 +263,10 @@ class DecoderBlock(nn.Module):
         dropout_rate: float,
     ):
         super().__init__()
-        self.masked_multi_head_attention = MultiHeadAttention(
+        self.masked_multi_head_self_attention = MultiHeadAttention(
             model_dim=model_dim, num_heads=num_heads
         )
-        self.multi_head_attention = MultiHeadAttention(
+        self.multi_head_cross_attention = MultiHeadAttention(
             model_dim=model_dim, num_heads=num_heads
         )
         self.feed_forward = FeedForward(
@@ -289,28 +283,28 @@ class DecoderBlock(nn.Module):
         self,
         decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],
         encoder_output: Float[Tensor, "batch enc_seq_len model_dim"],
-        enc_key_attention_mask: Bool[Tensor, "batch enc_seq_len"],
-        dec_key_attention_mask: Bool[Tensor, "batch dec_seq_len"],
+        enc_padding_mask: Bool[Tensor, "batch enc_seq_len"],
+        dec_padding_mask: Bool[Tensor, "batch dec_seq_len"],
     ) -> Float[Tensor, "batch dec_seq_len model_dim"]:
         residual = decoder_input
 
-        x = self.masked_multi_head_attention(
+        x = self.masked_multi_head_self_attention(
             query=decoder_input,
             key=decoder_input,
             value=decoder_input,
             is_causal=True,
-            key_attention_mask=dec_key_attention_mask,
+            key_attention_mask=dec_padding_mask,
         )
         x = self.dropout1(x) + residual
         x = self.layer_norm1(x)
 
         residual = x
 
-        x = self.multi_head_attention(
+        x = self.multi_head_cross_attention(
             query=x,
             key=encoder_output,
             value=encoder_output,
-            key_attention_mask=enc_key_attention_mask,
+            key_attention_mask=enc_padding_mask,
         )
         x = self.dropout2(x) + residual
         x = self.layer_norm2(x)
@@ -348,20 +342,23 @@ class Decoder(nn.Module):
         self,
         decoder_input: Float[Tensor, "batch dec_seq_len model_dim"],
         encoder_output: Float[Tensor, "batch enc_seq_len model_dim"],
-        enc_key_attention_mask: Bool[Tensor, "batch enc_seq_len"],
-        dec_key_attention_mask: Bool[Tensor, "batch dec_seq_len"],
+        enc_padding_mask: Bool[Tensor, "batch enc_seq_len"],
+        dec_padding_mask: Bool[Tensor, "batch dec_seq_len"],
     ) -> Float[Tensor, "batch dec_seq_len model_dim"]:
         x = decoder_input
         for decoder_layer in self.decoder_layers:
             x = decoder_layer(
                 decoder_input=x,
                 encoder_output=encoder_output,
-                enc_key_attention_mask=enc_key_attention_mask,
-                dec_key_attention_mask=dec_key_attention_mask,
+                enc_padding_mask=enc_padding_mask,
+                dec_padding_mask=dec_padding_mask,
             )
         return x
 
 
+################################################################################
+# Transformer
+################################################################################
 @dataclass
 class TransformerConfig:
     model_dim: int
@@ -379,9 +376,14 @@ class Transformer(nn.Module, PyTorchModelHubMixin):
         config: TransformerConfig,
     ):
         super().__init__()
-        self.embedding = Embedding(
+        self.encoder_embedding = Embedding(
             model_dim=config.model_dim, vocab_size=config.vocab_size
         )
+        self.decoder_embedding = Embedding(
+            model_dim=config.model_dim, vocab_size=config.vocab_size
+        )
+        # the positional encoding layer does not have a learnable parameter
+        # hence we can reuse it for the encoder and the decoder
         self.positional_encoding = PositionalEncoding(
             model_dim=config.model_dim,
             max_seq_len=config.max_seq_len,
@@ -401,37 +403,36 @@ class Transformer(nn.Module, PyTorchModelHubMixin):
             expansion_dim=config.expansion_dim,
             dropout_rate=config.dropout_rate,
         )
-
         self.lm_head = nn.Linear(config.model_dim, config.vocab_size, bias=False)
-        self.lm_head.weight = self.embedding.embedding.weight
+        self.lm_head.weight = self.decoder_embedding.embedding.weight
 
     def forward(
         self,
         encoder_input: Float[Tensor, "batch enc_seq_len"],
         decoder_input: Float[Tensor, "batch dec_seq_len"],
-        enc_key_attention_mask: Bool[Tensor, "batch enc_seq_len"],
-        dec_key_attention_mask: Bool[Tensor, "batch dec_seq_len"],
+        enc_padding_mask: Bool[Tensor, "batch enc_seq_len"],
+        dec_padding_mask: Bool[Tensor, "batch dec_seq_len"],
     ) -> Float[Tensor, "batch dec_seq_len vocab_tgt_size"]:
         # Embed the source input and add positional encoding
-        encoder_input = self.embedding(encoder_input)
-        encoder_input = self.positional_encoding(encoder_input)
+        encoder_input = self.encoder_embedding(tokens=encoder_input)
+        encoder_input = self.positional_encoding(inputs=encoder_input)
 
         # Embed the target input and add positional encoding
-        decoder_input = self.embedding(decoder_input)
+        decoder_input = self.decoder_embedding(tokens=decoder_input)
         decoder_input = self.positional_encoding(decoder_input)
 
         # Encode the source input
         encoder_output = self.encoder(
             encoder_input=encoder_input,
-            key_attention_mask=enc_key_attention_mask,
+            padding_mask=enc_padding_mask,
         )
 
         # Decode the target input
         decoder_output = self.decoder(
-            decoder_input=decoder_input,
             encoder_output=encoder_output,
-            enc_key_attention_mask=enc_key_attention_mask,
-            dec_key_attention_mask=dec_key_attention_mask,
+            decoder_input=decoder_input,
+            enc_padding_mask=enc_padding_mask,
+            dec_padding_mask=dec_padding_mask,
         )
 
         # Get the logits for the next token
@@ -439,21 +440,43 @@ class Transformer(nn.Module, PyTorchModelHubMixin):
         return logits
 
 
+################################################################################
+# Training
+################################################################################
+def collate_fn(batch):
+    source = [sample["de"] for sample in batch]
+    target = [sample["en"] for sample in batch]
+    return source, target
+
+
+def learning_rate_schedule(step_num, model_dim):
+    if step_num == 0:
+        step_num = 1  # Prevent division by zero
+    scale = model_dim**-0.5
+    step_term = min(step_num**-0.5, step_num * warmup_steps**-1.5)
+    return scale * step_term
+
+
 if __name__ == "__main__":
+    print("[INFO] loading dataset from hub...")
     train_dataset = load_dataset(config.DE_EN_SPLIT_DATASET, split="train")
     val_dataset = load_dataset(config.DE_EN_SPLIT_DATASET, split="validation")
 
-    tokenizer = Tokenizer.from_pretrained(config.TOKENIZER_ID)
-    tokenizer.enable_padding(pad_token=config.SPECIAL_TOKENS["pad_token"])
-    tokenizer.enable_truncation(config.MAX_SEQ_LENGTH)
+    print("[INFO] loading tokenizer from hub...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.TOKENIZER_ID,
+        add_bos_token=True,
+        add_eos_token=True,
+    )
+    tokenizer.pad_token = tokenizer.eos_token
 
+    print("[INOF] building data loader...")
     train_dataloader = DataLoader(
         dataset=train_dataset,
         batch_size=config.BATCH_SIZE,
         shuffle=True,
         collate_fn=collate_fn,
     )
-
     val_dataloader = DataLoader(
         dataset=val_dataset,
         batch_size=config.BATCH_SIZE,
@@ -461,6 +484,8 @@ if __name__ == "__main__":
         collate_fn=collate_fn,
     )
 
+    print("[INFO] building the model...")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     model_config = TransformerConfig(
         model_dim=config.MODEL_DIM,
         expansion_dim=config.EXPANSION_DIM,
@@ -468,43 +493,70 @@ if __name__ == "__main__":
         num_blocks=config.NUM_HEADS,
         dropout_rate=config.DROPOUT_RATE,
         max_seq_len=config.MAX_SEQ_LENGTH,
-        vocab_size=config.VOCAB_SIZE,
+        vocab_size=tokenizer.vocab_size,
     )
+    model = Transformer(config).to(device)
 
     total_num_batches = len(train_dataloader)
     total_steps = total_num_batches * config.NUM_EPOCHS
     warmup_steps = int(config.WARMUP_PERCENTAGE * total_steps)
 
-    model = Transformer(config).to("cuda")
     model.positional_encoding.position_encoding = (
-        model.positional_encoding.position_encoding.to("cuda")
+        model.positional_encoding.position_encoding.to(model.device)
     )
 
-    optimizer = Adam(model.parameters(), lr=config.LEARNING_RATE, betas=config.BETAS, eps=config.EPSILON)
-    scheduler = LambdaLR(optimizer, lr_lambda=partial(learning_rate_schedule, model_dim=config.MODEL_DIM))
+    optimizer = Adam(
+        model.parameters(),
+        lr=config.LEARNING_RATE,
+        betas=config.BETAS,
+        eps=config.EPSILON,
+    )
+    scheduler = LambdaLR(
+        optimizer, lr_lambda=partial(learning_rate_schedule, model_dim=config.MODEL_DIM)
+    )
 
-    loss_fn = nn.CrossEntropyLoss()
+    loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
 
     run = wandb.init(entity=config.WANDD_ENTITY, project=config.WANDB_PROJECT)
 
     for epoch in range(config.NUM_EPOCHS):
-
-        # Training Loop
+        print(f"[INFO] training {epoch=}")
         for idx, batch in enumerate(train_dataloader):
-            encoder_input = batch["input_ids"].to("cuda")
-            decoder_input = batch["labels"][..., :-1].to("cuda")
-            enc_key_attention_mask = batch["input_attention_mask"].to("cuda")
-            dec_key_attention_mask = batch["labels_attention_mask"][..., :-1].to("cuda")
+            source, target = batch
+
+            # inputs now have input_ids and attention_mask
+            # input_ids are tokens
+            # attention_mask is the mask for padding 1=attend 0=not_attend
+            # notice the padding and truncation -- we pad a batch to the max length, but also truncate is something overflows
+            source_inputs = tokenizer(
+                text=source,
+                padding=True,
+                return_tensors="pt",
+                padding_side="right",
+                truncation="max_length",
+                max_length=config.MAX_SEQ_LENGTH,
+            ).to(model.device)
+            target_inputs = tokenizer(
+                text=target,
+                padding=True,
+                return_tensors="pt",
+                padding_side="right",
+                truncation="max_length",
+                max_length=config.MAX_SEQ_LENGTH,
+            ).to(model.device)
 
             logits = model(
-                encoder_input=encoder_input,
-                decoder_input=decoder_input,
-                enc_key_attention_mask=enc_key_attention_mask,
-                dec_key_attention_mask=dec_key_attention_mask,
+                encoder_input=source_inputs["input_ids"],
+                decoder_input=target_inputs["input_ids"][:, 0:-1],
+                enc_padding_mask=source_inputs["attention_mask"],
+                dec_padding_mask=target_inputs["attention_mask"][:, 0:-1],
             )
-
             logits = logits.view(-1, logits.size(-1))
-            target = batch["labels"][..., 1:].to("cuda").view(-1).long()
+
+            labels = (target["input_ids"] * target["attention_mask"].bool()) + (
+                -100 * torch.logical_not(target["attention_mask"].bool())
+            )
+            labels = labels[:, 1:]
 
             loss = loss_fn(input=logits, target=target)
             run.log({"train-loss": loss.item()})
@@ -516,7 +568,6 @@ if __name__ == "__main__":
                 optimizer.zero_grad()
 
             scheduler.step()
-
 
         # Validation Loop
         model.eval()
@@ -546,5 +597,5 @@ if __name__ == "__main__":
         model.train()  # Set model back to training mode
 
         model.push_to_hub(config.MODEL_NAME, commit_message=f"epoch_{epoch}")
-        
+
     run.finish()

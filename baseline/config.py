@@ -3,15 +3,7 @@ ORIGINAL_DATASET = "wmt/wmt14"
 DE_EN_SPLIT_DATASET = "llm-scratch/wmt14-de-en-split"
 
 # Tokenizer
-VOCAB_SIZE = 37_000
-MIN_FREQUENCY = 2
-SPECIAL_TOKENS = {
-    "pad_token": "[PAD]",
-    "begin_token": "[BOS]",
-    "end_token": "[EOS]",
-    "unknown_token": "[UNK]",
-}
-TOKENIZER_ID = "llm-scratch/wmt-14-de-en-tokenizer"
+TOKENIZER_ID = "meta-llama/Llama-2-7b"
 
 # Data
 MAX_SEQ_LENGTH = 512
