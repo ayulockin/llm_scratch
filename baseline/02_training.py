@@ -584,22 +584,36 @@ if __name__ == "__main__":
 
         with torch.no_grad():  # Disable gradient computation for validation
             for batch in val_dataloader:
-                encoder_input = batch["input_ids"].to("cuda")
-                decoder_input = batch["labels"][..., :-1].to("cuda")
-                enc_key_attention_mask = batch["input_attention_mask"].to("cuda")
-                dec_key_attention_mask = batch["labels_attention_mask"][..., :-1].to(
-                    "cuda"
-                )
+                source, target = batch
+                source_inputs = tokenizer(
+                    text=source,
+                    padding=True,
+                    return_tensors="pt",
+                    padding_side="right",
+                    truncation="max_length",
+                    max_length=config.MAX_SEQ_LENGTH,
+                ).to(model.device)
+                target_inputs = tokenizer(
+                    text=target,
+                    padding=True,
+                    return_tensors="pt",
+                    padding_side="right",
+                    truncation="max_length",
+                    max_length=config.MAX_SEQ_LENGTH,
+                ).to(model.device)
 
                 logits = model(
-                    encoder_input=encoder_input,
-                    decoder_input=decoder_input,
-                    enc_key_attention_mask=enc_key_attention_mask,
-                    dec_key_attention_mask=dec_key_attention_mask,
+                    encoder_input=source_inputs["input_ids"],
+                    decoder_input=target_inputs["input_ids"][:, 0:-1],
+                    enc_padding_mask=source_inputs["attention_mask"],
+                    dec_padding_mask=target_inputs["attention_mask"][:, 0:-1],
                 )
-
                 logits = logits.view(-1, logits.size(-1))
-                target = batch["labels"][..., 1:].to("cuda").view(-1).long()
+
+                labels = (target["input_ids"] * target["attention_mask"].bool()) + (
+                    -100 * torch.logical_not(target["attention_mask"].bool())
+                )
+                labels = labels[:, 1:]
 
                 val_loss = loss_fn(input=logits, target=target)
                 run.log({"val-loss": val_loss.item()})
@@ -609,3 +623,4 @@ if __name__ == "__main__":
         model.push_to_hub(config.MODEL_NAME, commit_message=f"epoch_{epoch}")
 
     run.finish()
+    tokenizer.push_to_hub(config.MODEL_NAME)
