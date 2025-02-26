@@ -1,4 +1,4 @@
-import config
+import config as cfg
 
 import torch
 from torch import nn
@@ -303,7 +303,7 @@ class DecoderBlock(nn.Module):
             key=decoder_input,
             value=decoder_input,
             is_causal=True,
-            key_attention_mask=dec_padding_mask,
+            padding_mask=dec_padding_mask,
         )
         x = self.dropout1(x) + residual
         x = self.layer_norm1(x)
@@ -314,7 +314,7 @@ class DecoderBlock(nn.Module):
             query=x,
             key=encoder_output,
             value=encoder_output,
-            key_attention_mask=enc_padding_mask,
+            padding_mask=enc_padding_mask,
         )
         x = self.dropout2(x) + residual
         x = self.layer_norm2(x)
@@ -469,12 +469,12 @@ def learning_rate_schedule(step_num, model_dim):
 
 if __name__ == "__main__":
     print("[INFO] loading dataset from hub...")
-    train_dataset = load_dataset(config.DE_EN_SPLIT_DATASET, split="train")
-    val_dataset = load_dataset(config.DE_EN_SPLIT_DATASET, split="validation")
+    train_dataset = load_dataset(cfg.DE_EN_SPLIT_DATASET, split="train")
+    val_dataset = load_dataset(cfg.DE_EN_SPLIT_DATASET, split="validation")
 
     print("[INFO] loading tokenizer from hub...")
     tokenizer = AutoTokenizer.from_pretrained(
-        config.TOKENIZER_ID,
+        cfg.TOKENIZER_ID,
         add_bos_token=True,
         add_eos_token=True,
     )
@@ -483,13 +483,13 @@ if __name__ == "__main__":
     print("[INOF] building data loader...")
     train_dataloader = DataLoader(
         dataset=train_dataset,
-        batch_size=config.BATCH_SIZE,
+        batch_size=cfg.BATCH_SIZE,
         shuffle=True,
         collate_fn=collate_fn,
     )
     val_dataloader = DataLoader(
         dataset=val_dataset,
-        batch_size=config.BATCH_SIZE,
+        batch_size=cfg.BATCH_SIZE,
         shuffle=True,
         collate_fn=collate_fn,
     )
@@ -497,39 +497,39 @@ if __name__ == "__main__":
     print("[INFO] building the model...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model_config = TransformerConfig(
-        model_dim=config.MODEL_DIM,
-        expansion_dim=config.EXPANSION_DIM,
-        num_heads=config.NUM_HEADS,
-        num_blocks=config.NUM_HEADS,
-        dropout_rate=config.DROPOUT_RATE,
-        max_seq_len=config.MAX_SEQ_LENGTH,
+        model_dim=cfg.MODEL_DIM,
+        expansion_dim=cfg.EXPANSION_DIM,
+        num_heads=cfg.NUM_HEADS,
+        num_blocks=cfg.NUM_HEADS,
+        dropout_rate=cfg.DROPOUT_RATE,
+        max_seq_len=cfg.MAX_SEQ_LENGTH,
         vocab_size=tokenizer.vocab_size,
     )
-    model = Transformer(config).to(device)
+    model = Transformer(model_config).to(device)
 
     total_num_batches = len(train_dataloader)
-    total_steps = total_num_batches * config.NUM_EPOCHS
-    warmup_steps = int(config.WARMUP_PERCENTAGE * total_steps)
+    total_steps = total_num_batches * cfg.NUM_EPOCHS
+    warmup_steps = int(cfg.WARMUP_PERCENTAGE * total_steps)
 
     model.positional_encoding.position_encoding = (
-        model.positional_encoding.position_encoding.to(model.device)
+        model.positional_encoding.position_encoding.to(device)
     )
 
     optimizer = Adam(
         model.parameters(),
-        lr=config.LEARNING_RATE,
-        betas=config.BETAS,
-        eps=config.EPSILON,
+        lr=cfg.LEARNING_RATE,
+        betas=cfg.BETAS,
+        eps=cfg.EPSILON,
     )
     scheduler = LambdaLR(
-        optimizer, lr_lambda=partial(learning_rate_schedule, model_dim=config.MODEL_DIM)
+        optimizer, lr_lambda=partial(learning_rate_schedule, model_dim=cfg.MODEL_DIM)
     )
 
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
 
-    run = wandb.init(entity=config.WANDD_ENTITY, project=config.WANDB_PROJECT)
+    run = wandb.init(entity=cfg.WANDD_ENTITY, project=cfg.WANDB_PROJECT)
 
-    for epoch in range(config.NUM_EPOCHS):
+    for epoch in range(cfg.NUM_EPOCHS):
         print(f"[INFO] training {epoch=}")
         for idx, batch in enumerate(train_dataloader):
             source, target = batch
@@ -543,17 +543,17 @@ if __name__ == "__main__":
                 padding=True,
                 return_tensors="pt",
                 padding_side="right",
-                truncation="max_length",
-                max_length=config.MAX_SEQ_LENGTH,
-            ).to(model.device)
+                truncation=True,
+                max_length=cfg.MAX_SEQ_LENGTH,
+            ).to(device)
             target_inputs = tokenizer(
                 text=target,
                 padding=True,
                 return_tensors="pt",
                 padding_side="right",
-                truncation="max_length",
-                max_length=config.MAX_SEQ_LENGTH,
-            ).to(model.device)
+                truncation=True,
+                max_length=cfg.MAX_SEQ_LENGTH,
+            ).to(device)
 
             logits = model(
                 encoder_input=source_inputs["input_ids"],
@@ -563,17 +563,17 @@ if __name__ == "__main__":
             )
             logits = logits.view(-1, logits.size(-1))
 
-            labels = (target["input_ids"] * target["attention_mask"].bool()) + (
-                -100 * torch.logical_not(target["attention_mask"].bool())
+            labels = (target_inputs["input_ids"] * target_inputs["attention_mask"].bool()) + (
+                -100 * torch.logical_not(target_inputs["attention_mask"].bool())
             )
-            labels = labels[:, 1:]
+            labels = labels[:, 1:].flatten()
 
-            loss = loss_fn(input=logits, target=target)
+            loss = loss_fn(input=logits, target=labels)
             run.log({"train-loss": loss.item()})
 
             loss.backward()
 
-            if idx % config.GRAD_ACCUMULATION_STEP == 0:
+            if idx % cfg.GRAD_ACCUMULATION_STEP == 0:
                 optimizer.step()
                 optimizer.zero_grad()
 
@@ -591,16 +591,16 @@ if __name__ == "__main__":
                     return_tensors="pt",
                     padding_side="right",
                     truncation="max_length",
-                    max_length=config.MAX_SEQ_LENGTH,
-                ).to(model.device)
+                    max_length=cfg.MAX_SEQ_LENGTH,
+                ).to(device)
                 target_inputs = tokenizer(
                     text=target,
                     padding=True,
                     return_tensors="pt",
                     padding_side="right",
                     truncation="max_length",
-                    max_length=config.MAX_SEQ_LENGTH,
-                ).to(model.device)
+                    max_length=cfg.MAX_SEQ_LENGTH,
+                ).to(device)
 
                 logits = model(
                     encoder_input=source_inputs["input_ids"],
@@ -610,17 +610,17 @@ if __name__ == "__main__":
                 )
                 logits = logits.view(-1, logits.size(-1))
 
-                labels = (target["input_ids"] * target["attention_mask"].bool()) + (
-                    -100 * torch.logical_not(target["attention_mask"].bool())
+                labels = (target_inputs["input_ids"] * target_inputs["attention_mask"].bool()) + (
+                    -100 * torch.logical_not(target_inputs["attention_mask"].bool())
                 )
-                labels = labels[:, 1:]
+                labels = labels[:, 1:].flatten()
 
-                val_loss = loss_fn(input=logits, target=target)
+                val_loss = loss_fn(input=logits, target=labels)
                 run.log({"val-loss": val_loss.item()})
 
         model.train()  # Set model back to training mode
 
-        model.push_to_hub(config.MODEL_NAME, commit_message=f"epoch_{epoch}")
+        model.push_to_hub(cfg.MODEL_NAME, commit_message=f"epoch_{epoch}")
 
     run.finish()
-    tokenizer.push_to_hub(config.MODEL_NAME)
+    tokenizer.push_to_hub(cfg.MODEL_NAME)

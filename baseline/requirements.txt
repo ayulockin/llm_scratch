@@ -1,4 +1,7 @@
+torch
+sentencepiece
 datasets
-tokenizers
+huggingface-hub
+transformers
 wandb
 jaxtyping
