@@ -110,18 +110,28 @@ class ScaledDotProductAttention(nn.Module):
         similarity = torch.einsum("bqd, bkd -> bqk", query, key)
         scaled_similarity = torch.divide(similarity, math.sqrt(self.dim_k))
 
-        padding_mask = padding_mask.unsqueeze(1)  # Not sure why
+        # This is an interesting bit, the scaled_similarity is of shape (b, q, k)
+        # The causal mask is of the shape (b, q, k)
+        # The padding mask comes with the shape of (b, k) and we need to add an extra dim
+        # in the first axis to simulate the query dim making it (b, 1, k)
+        # this is done in order to match the shape with the scaled similarity
+        padding_mask = padding_mask.unsqueeze(1)  # 1=attend 0=pad
 
         if is_causal:
             # create the causal mask and use the padding mask to create
             # the ultimate mask that is use before softmax
-            causal_mask = torch.triu(
-                torch.ones_like(scaled_similarity).bool(), diagonal=1
-            )
-            mask = torch.logical_or(padding_mask, causal_mask)
+            causal_mask = torch.tril(
+                torch.ones_like(scaled_similarity),
+            )  # 1=attend 0=mask
+            mask = torch.logical_and(
+                padding_mask, causal_mask
+            )  # True=value False=masked
         else:
             mask = padding_mask
 
+        # Masked fill work by filling the True positions with a value
+        # Here we would need to invert the mask so that we position the negative infinity
+        # correctly.
         scaled_similarity = scaled_similarity.masked_fill(
             torch.logical_not(mask), value=-torch.inf
         )
