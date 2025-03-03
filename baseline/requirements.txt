@@ -1,0 +1,7 @@
+torch
+sentencepiece
+datasets
+huggingface-hub
+transformers
+wandb
+jaxtyping
