@@ -5,3 +5,4 @@ huggingface-hub
 transformers
 wandb
 jaxtyping
+rich

@@ -7,7 +7,7 @@ TOKENIZER_ID = "meta-llama/Llama-2-7b"
 
 # Data
 MAX_SEQ_LENGTH = 512
-BATCH_SIZE = 8
+BATCH_SIZE = 28
 
 # Model
 MODEL_DIM = 512
@@ -19,6 +19,9 @@ MODEL_NAME = "llm-scratch/wmt-14-de-en-model"
 
 # Train
 NUM_EPOCHS = 2
+NUM_TOKENS = 2e8  # 200M tokens
+TOTAL_TOKENS_IN_DATASET = 1.94e8  # 194M tokens - source is `en`. Run with `CALCULATE_TOTAL_TOKENS=True` to verify.
+VALIDATION_STEP = 10000
 WARMUP_PERCENTAGE = 0.4
 LEARNING_RATE = 1.0
 BETAS = (0.9, 0.98)

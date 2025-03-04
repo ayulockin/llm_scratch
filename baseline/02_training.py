@@ -14,6 +14,9 @@ from datasets import load_dataset
 import math
 import wandb
 from tqdm import tqdm
+from rich.console import Console
+from rich import table
+from rich import progress
 from functools import partial
 from jaxtyping import Integer, Float, Bool
 from dataclasses import dataclass
@@ -463,7 +466,7 @@ def collate_fn(batch):
     return source, target
 
 
-def learning_rate_schedule(step_num, model_dim):
+def learning_rate_schedule(step_num, model_dim, warmup_steps):
     if step_num == 0:
         step_num = 1  # Prevent division by zero
     scale = model_dim**-0.5
@@ -489,11 +492,13 @@ def calculate_total_tokens(dataset, tokenizer):
 
 
 if __name__ == "__main__":
-    print("[INFO] loading dataset from hub...")
+    console = Console()
+
+    console.print("[bold green]Loading dataset from hub...[/bold green]")
     train_dataset = load_dataset(cfg.DE_EN_SPLIT_DATASET, split="train")
     val_dataset = load_dataset(cfg.DE_EN_SPLIT_DATASET, split="validation")
 
-    print("[INFO] loading tokenizer from hub...")
+    console.print("[bold green]Loading tokenizer from hub...[/bold green]")
     tokenizer = AutoTokenizer.from_pretrained(
         cfg.TOKENIZER_ID,
         add_bos_token=True,
@@ -502,7 +507,7 @@ if __name__ == "__main__":
     )
     tokenizer.pad_token = tokenizer.eos_token
 
-    print("[INOF] building data loader...")
+    console.print("[bold green]Building data loader...[/bold green]")
     train_dataloader = DataLoader(
         dataset=train_dataset,
         batch_size=cfg.BATCH_SIZE,
@@ -517,10 +522,11 @@ if __name__ == "__main__":
     )
 
     if cfg.CALCULATE_TOTAL_TOKENS:
-        total_tokens = calculate_total_tokens(train_dataset, tokenizer)
-        print(f"[INFO] total tokens: {total_tokens}")
+        with console.status("[bold yellow]Calculating total tokens in dataset...[/bold yellow]"):
+            total_tokens = calculate_total_tokens(train_dataset, tokenizer)
+            console.print(f"[bold cyan]Total tokens in dataset: {total_tokens:,}[/bold cyan]")
 
-    print("[INFO] building the model...")
+    console.print("[bold green]Building the model...[/bold green]")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model_config = TransformerConfig(
         model_dim=cfg.MODEL_DIM,
@@ -533,13 +539,15 @@ if __name__ == "__main__":
     )
     model = Transformer(model_config).to(device)
 
-    total_num_batches = len(train_dataloader)
-    total_steps = total_num_batches * cfg.NUM_EPOCHS
-    warmup_steps = int(cfg.WARMUP_PERCENTAGE * total_steps)
-
     model.positional_encoding.position_encoding = (
         model.positional_encoding.position_encoding.to(device)
     )
+
+    # Calculate the total number of steps needed to reach cfg.NUM_TOKENS
+    tokens_per_epoch = cfg.TOTAL_TOKENS_IN_DATASET / len(train_dataloader)
+    console.print(f"[bold cyan]Tokens per step (approx): {tokens_per_epoch:,}[/bold cyan]")
+    total_steps = cfg.NUM_TOKENS / tokens_per_epoch
+    warmup_steps = int(cfg.WARMUP_PERCENTAGE * total_steps)
 
     optimizer = Adam(
         model.parameters(),
@@ -548,105 +556,147 @@ if __name__ == "__main__":
         eps=cfg.EPSILON,
     )
     scheduler = LambdaLR(
-        optimizer, lr_lambda=partial(learning_rate_schedule, model_dim=cfg.MODEL_DIM)
+        optimizer,
+        lr_lambda=partial(learning_rate_schedule, model_dim=cfg.MODEL_DIM, warmup_steps=warmup_steps)
     )
 
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
 
-    # run = wandb.init(entity=cfg.WANDD_ENTITY, project=cfg.WANDB_PROJECT)
+    run = wandb.init(entity=cfg.WANDD_ENTITY, project=cfg.WANDB_PROJECT)
+    
+    wandb.define_metric("train_step")
+    wandb.define_metric("train/*", step_metric="train_step")
+    wandb.define_metric("val_step")
+    wandb.define_metric("val/*", step_metric="val_step")
 
-    # for epoch in range(cfg.NUM_EPOCHS):
-    #     print(f"[INFO] training {epoch=}")
-    #     for idx, batch in enumerate(train_dataloader):
-    #         source, target = batch
+    with progress.Progress(
+        progress.TextColumn("[bold blue]{task.description}[/bold blue]"),
+        progress.BarColumn(),
+        progress.TaskProgressColumn(),
+        progress.TextColumn("•"),
+        progress.TimeRemainingColumn(),
+    ) as progress:
+        token_task = progress.add_task(
+            "Training progress", total=cfg.NUM_TOKENS
+        )
 
-    #         # inputs now have input_ids and attention_mask
-    #         # input_ids are tokens
-    #         # attention_mask is the mask for padding 1=attend 0=not_attend
-    #         # notice the padding and truncation -- we pad a batch to the max length, but also truncate is something overflows
-    #         source_inputs = tokenizer(
-    #             text=source,
-    #             padding=True,
-    #             return_tensors="pt",
-    #             padding_side="right",
-    #             truncation=True,
-    #             max_length=cfg.MAX_SEQ_LENGTH,
-    #         ).to(device)
-    #         target_inputs = tokenizer(
-    #             text=target,
-    #             padding=True,
-    #             return_tensors="pt",
-    #             padding_side="right",
-    #             truncation=True,
-    #             max_length=cfg.MAX_SEQ_LENGTH,
-    #         ).to(device)
+        idx = 0
+        num_tokens = 0
+        train_step = 0
+        val_step = 0
+        
+        train_iter = iter(train_dataloader)
 
-    #         logits = model(
-    #             encoder_input=source_inputs["input_ids"],
-    #             decoder_input=target_inputs["input_ids"][:, 0:-1],
-    #             enc_padding_mask=source_inputs["attention_mask"],
-    #             dec_padding_mask=target_inputs["attention_mask"][:, 0:-1],
-    #         )
-    #         logits = logits.view(-1, logits.size(-1))
+        while num_tokens < cfg.NUM_TOKENS:
+            try:
+                batch = next(train_iter)
+            except StopIteration:
+                train_iter = iter(train_dataloader)
+                batch = next(train_iter)
+            
+            source, target = batch
 
-    #         labels = (target_inputs["input_ids"] * target_inputs["attention_mask"].bool()) + (
-    #             -100 * torch.logical_not(target_inputs["attention_mask"].bool())
-    #         )
-    #         labels = labels[:, 1:].flatten()
+            # inputs now have input_ids and attention_mask
+            # input_ids are tokens
+            # attention_mask is the mask for padding 1=attend 0=not_attend
+            # notice the padding and truncation -- we pad a batch to the max length, but also truncate is something overflows
+            source_inputs = tokenizer(
+                text=source,
+                padding=True,
+                return_tensors="pt",
+                padding_side="right",
+                truncation=True,
+                max_length=cfg.MAX_SEQ_LENGTH,
+            ).to(device)
+            target_inputs = tokenizer(
+                text=target,
+                padding=True,
+                return_tensors="pt",
+                padding_side="right",
+                truncation=True,
+                max_length=cfg.MAX_SEQ_LENGTH,
+            ).to(device)
 
-    #         loss = loss_fn(input=logits, target=labels)
-    #         run.log({"train_loss": loss.item()})
+            # idx is the number of batches processed needed for gradient accumulation
+            idx += 1
+            # We count the number of tokens for the source of the batch
+            batch_tokens = source_inputs["input_ids"].ne(tokenizer.pad_token_id).sum().item()
+            num_tokens += batch_tokens
+            progress.update(token_task, advance=batch_tokens)
 
-    #         loss.backward()
+            logits = model(
+                encoder_input=source_inputs["input_ids"],
+                decoder_input=target_inputs["input_ids"][:, 0:-1],
+                enc_padding_mask=source_inputs["attention_mask"],
+                dec_padding_mask=target_inputs["attention_mask"][:, 0:-1],
+            )
+            logits = logits.view(-1, logits.size(-1))
 
-    #         if idx % cfg.GRAD_ACCUMULATION_STEP == 0:
-    #             optimizer.step()
-    #             optimizer.zero_grad()
+            labels = (target_inputs["input_ids"] * target_inputs["attention_mask"].bool()) + (
+                -100 * torch.logical_not(target_inputs["attention_mask"].bool())
+            )
+            labels = labels[:, 1:].flatten()
 
-    #         scheduler.step()
+            loss = loss_fn(input=logits, target=labels)
 
-    #     # Validation Loop
-    #     model.eval()
+            run.log({"train/loss": loss.item(), "train_step": train_step})
+            train_step += 1
 
-    #     with torch.no_grad():  # Disable gradient computation for validation
-    #         for batch in val_dataloader:
-    #             source, target = batch
-    #             source_inputs = tokenizer(
-    #                 text=source,
-    #                 padding=True,
-    #                 return_tensors="pt",
-    #                 padding_side="right",
-    #                 truncation="max_length",
-    #                 max_length=cfg.MAX_SEQ_LENGTH,
-    #             ).to(device)
-    #             target_inputs = tokenizer(
-    #                 text=target,
-    #                 padding=True,
-    #                 return_tensors="pt",
-    #                 padding_side="right",
-    #                 truncation="max_length",
-    #                 max_length=cfg.MAX_SEQ_LENGTH,
-    #             ).to(device)
+            loss.backward()
 
-    #             logits = model(
-    #                 encoder_input=source_inputs["input_ids"],
-    #                 decoder_input=target_inputs["input_ids"][:, 0:-1],
-    #                 enc_padding_mask=source_inputs["attention_mask"],
-    #                 dec_padding_mask=target_inputs["attention_mask"][:, 0:-1],
-    #             )
-    #             logits = logits.view(-1, logits.size(-1))
+            if idx % cfg.GRAD_ACCUMULATION_STEP == 0:
+                optimizer.step()
+                optimizer.zero_grad()
 
-    #             labels = (target_inputs["input_ids"] * target_inputs["attention_mask"].bool()) + (
-    #                 -100 * torch.logical_not(target_inputs["attention_mask"].bool())
-    #             )
-    #             labels = labels[:, 1:].flatten()
+            scheduler.step()
 
-    #             val_loss = loss_fn(input=logits, target=labels)
-    #             run.log({"val_loss": val_loss.item()})
+            # Validation Loop
+            if idx % cfg.VALIDATION_STEP == 0:
+                model.eval()
 
-    #     model.train()  # Set model back to training mode
+                with torch.no_grad():  # Disable gradient computation for validation
+                    for batch in tqdm(val_dataloader, desc="Validation progress"):
+                        source, target = batch
+                        source_inputs = tokenizer(
+                            text=source,
+                            padding=True,
+                            return_tensors="pt",
+                            padding_side="right",
+                            truncation=True,
+                            max_length=cfg.MAX_SEQ_LENGTH,
+                        ).to(device)
 
-    #     model.push_to_hub(cfg.MODEL_NAME, commit_message=f"epoch_{epoch}")
+                        target_inputs = tokenizer(
+                            text=target,
+                            padding=True,
+                            return_tensors="pt",
+                            padding_side="right",
+                            truncation=True,
+                            max_length=cfg.MAX_SEQ_LENGTH,
+                        ).to(device)
 
-    # run.finish()
-    # tokenizer.push_to_hub(cfg.MODEL_NAME)
+                        logits = model(
+                            encoder_input=source_inputs["input_ids"],
+                            decoder_input=target_inputs["input_ids"][:, 0:-1],
+                            enc_padding_mask=source_inputs["attention_mask"],
+                            dec_padding_mask=target_inputs["attention_mask"][:, 0:-1],
+                        )
+                        logits = logits.view(-1, logits.size(-1))
+
+                        labels = (target_inputs["input_ids"] * target_inputs["attention_mask"].bool()) + (
+                            -100 * torch.logical_not(target_inputs["attention_mask"].bool())
+                        )
+                        labels = labels[:, 1:].flatten()
+
+                        val_loss = loss_fn(input=logits, target=labels)
+                        run.log({"val/loss": val_loss.item(), "val_step": val_step})
+                        val_step += 1
+
+                model.train()  # Set model back to training mode
+
+    # Save the model
+    console.print("[bold green]Training complete! Saving final model...[/bold green]")
+    model.push_to_hub(cfg.MODEL_NAME, commit_message=f"epoch_{epoch}")
+    tokenizer.push_to_hub(cfg.MODEL_NAME)
+
+    run.finish()
