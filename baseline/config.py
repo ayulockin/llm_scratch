@@ -7,7 +7,7 @@ TOKENIZER_ID = "meta-llama/Llama-2-7b"
 
 # Data
 MAX_SEQ_LENGTH = 512
-BATCH_SIZE = 28
+BATCH_SIZE = 16
 
 # Model
 MODEL_DIM = 512
